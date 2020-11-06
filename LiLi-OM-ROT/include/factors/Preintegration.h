@@ -50,7 +50,7 @@ public:
         nh.param<double>("/IMU/acc_w", acc_w, 0.000011);
         nh.param<double>("/IMU/gyr_w", gyr_w, 0.000001);
 
-
+        //和lio-mapping一样
         covariance_ = 0.001 * Matrix<double, 15, 15>::Identity();
         g_vec_ = -Eigen::Vector3d(0, 0, 9.805);
 
@@ -246,7 +246,7 @@ public:
     std::vector<Vector3d> acc_buf_;
     std::vector<Vector3d> gyr_buf_;
 
-    Eigen::Vector3d g_vec_;
+    Eigen::Vector3d g_vec_; //[0, 0, -9.8]
     double nf, cf;
     double acc_n;
     double gyr_n;

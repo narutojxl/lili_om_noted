@@ -51,8 +51,8 @@ private:
     double time_new_odom;
     double time_new_each_odom = 0;
 
-    pcl::PointCloud<PointType>::Ptr edge_last;
-    pcl::PointCloud<PointType>::Ptr surf_last;
+    pcl::PointCloud<PointType>::Ptr edge_last; //curr less sharp points
+    pcl::PointCloud<PointType>::Ptr surf_last; //curr less flat points
     pcl::PointCloud<PointType>::Ptr full_cloud;
     vector<pcl::PointCloud<PointType>::Ptr> full_clouds_ds;
 
@@ -62,7 +62,7 @@ private:
     vector<pcl::PointCloud<PointType>::Ptr> edge_lasts_ds;
     vector<pcl::PointCloud<PointType>::Ptr> surf_lasts_ds;
 
-    pcl::PointCloud<PointType>::Ptr edge_local_map;
+    pcl::PointCloud<PointType>::Ptr edge_local_map; //map: imu0 frame
     pcl::PointCloud<PointType>::Ptr surf_local_map;
     pcl::PointCloud<PointType>::Ptr edge_local_map_ds;
     pcl::PointCloud<PointType>::Ptr surf_local_map_ds;
@@ -81,6 +81,7 @@ private:
     pcl::PointCloud<PointType>::Ptr his_key_frames_ds;
 
     pcl::PointCloud<PointXYZI>::Ptr pose_cloud_frame; //position of keyframe
+
     // Usage for PointPoseInfo
     // position: x, y, z
     // orientation: qw - w, qx - x, qy - y, qz - z
@@ -95,8 +96,8 @@ private:
     pcl::PointCloud<PointType>::Ptr global_map;
     pcl::PointCloud<PointType>::Ptr global_map_ds;
 
-    vector<pcl::PointCloud<PointType>::Ptr> edge_frames;
-    vector<pcl::PointCloud<PointType>::Ptr> surf_frames;
+    vector<pcl::PointCloud<PointType>::Ptr> edge_frames; //每一帧edge points
+    vector<pcl::PointCloud<PointType>::Ptr> surf_frames; //每一帧surf points
 
     deque<pcl::PointCloud<PointType>::Ptr> recent_edge_keyframes;
     deque<pcl::PointCloud<PointType>::Ptr> recent_surf_keyframes;
@@ -154,16 +155,16 @@ private:
     int slide_window_width;
 
     //index of keyframe
-    vector<int> keyframe_idx;
-    vector<int> keyframe_id_in_frame;
+    vector<int> keyframe_idx; //从0开始
+    vector<int> keyframe_id_in_frame; //从0开始
 
     vector<vector<double>> abs_poses;
 
     int num_kf_sliding;
 
-    vector<sensor_msgs::ImuConstPtr> imu_buf;
-    nav_msgs::Odometry::ConstPtr odom_cur;
-    vector<nav_msgs::Odometry::ConstPtr> each_odom_buf;
+    vector<sensor_msgs::ImuConstPtr> imu_buf; //imu meas
+    nav_msgs::Odometry::ConstPtr odom_cur; //curr laser's pose in odom
+    vector<nav_msgs::Odometry::ConstPtr> each_odom_buf; //每相邻两帧delta_T
     double time_last_imu;
     double cur_time_imu;
     bool first_imu;
@@ -234,8 +235,8 @@ public:
         sub_full_cloud = nh.subscribe<sensor_msgs::PointCloud2>("/full_point_cloud", 100, &BackendFusion::full_cloudHandler, this);
         sub_edge = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100, &BackendFusion::edge_lastHandler, this);
         sub_surf = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100, &BackendFusion::surfaceLastHandler, this);
-        sub_odom = nh.subscribe<nav_msgs::Odometry>("/odom", 5, &BackendFusion::odomHandler, this);
-        sub_each_odom = nh.subscribe<nav_msgs::Odometry>("/each_odom", 5, &BackendFusion::eachOdomHandler, this);
+        sub_odom = nh.subscribe<nav_msgs::Odometry>("/odom", 5, &BackendFusion::odomHandler, this); //laser odom 
+        sub_each_odom = nh.subscribe<nav_msgs::Odometry>("/each_odom", 5, &BackendFusion::eachOdomHandler, this); //每相邻两帧的delta_T(last to curr)
 
         sub_imu = nh.subscribe<sensor_msgs::Imu>(imu_topic, 200, &BackendFusion::imuHandler, this);
 
@@ -250,9 +251,9 @@ public:
     ~BackendFusion() {}
 
     void allocateMemory() {
-        tmpQuat = new double *[slide_window_width];
-        tmpTrans = new double *[slide_window_width];
-        tmpSpeedBias = new double *[slide_window_width];
+        tmpQuat = new double *[slide_window_width]; //3
+        tmpTrans = new double *[slide_window_width]; //3
+        tmpSpeedBias = new double *[slide_window_width]; //3
         for (int i = 0; i < slide_window_width; ++i) {
             tmpQuat[i] = new double[4];
             tmpTrans[i] = new double[3];
@@ -518,14 +519,14 @@ public:
         full_cloud->clear();
         pcl::fromROSMsg(*pointCloudIn, *full_cloud);
         pcl::PointCloud<PointType>::Ptr full(new pcl::PointCloud<PointType>());
-        pcl::copyPointCloud(*full_cloud, *full);
+        pcl::copyPointCloud(*full_cloud, *full); //full: not used
         new_full_cloud = true;
     }
 
     void edge_lastHandler(const sensor_msgs::PointCloud2ConstPtr& pointCloudIn) {
         edge_last->clear();
         time_new_edge = pointCloudIn->header.stamp.toSec();
-        pcl::fromROSMsg(*pointCloudIn, *edge_last);
+        pcl::fromROSMsg(*pointCloudIn, *edge_last); //curr less sharp points
 
         new_edge = true;
     }
@@ -567,7 +568,7 @@ public:
         if (cur_time_imu < 0)
             cur_time_imu = time_last_imu;
 
-        if (!first_imu) {
+        if (!first_imu) {//第一帧imu
             if(data_set == "utbm")
                 g = Eigen::Vector3d(ImuIn->linear_acceleration.x, ImuIn->linear_acceleration.y, ImuIn->linear_acceleration.z);
             else {
@@ -597,7 +598,7 @@ public:
             acc_0 = linear_acceleration;
             gyr_0 = angular_velocity;
             pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas[0], Bgs[0]));
-            pre_integrations.back()->g_vec_ = -g;
+            pre_integrations.back()->g_vec_ = -g;  //g=[0, 0, 9.8]
         }
     }
 
@@ -1273,9 +1274,9 @@ public:
 
     void buildLocalMapWithLandMark() {
         // Initialization
-        if (pose_cloud_frame->points.size() < 1) {
+        if (pose_cloud_frame->points.size() < 1) {//第1帧laser
             PointPoseInfo Tbl;
-            Tbl.qw = q_bl.w();
+            Tbl.qw = q_bl.w(); //imu to laser
             Tbl.qx = q_bl.x();
             Tbl.qy = q_bl.y();
             Tbl.qz = q_bl.z();
@@ -1283,7 +1284,7 @@ public:
             Tbl.y = t_bl.y();
             Tbl.z = t_bl.z();
             //ROS_INFO("Initialization for local map building");
-            *edge_local_map += *transformCloud(edge_last, &Tbl);
+            *edge_local_map += *transformCloud(edge_last, &Tbl); //把第一帧laser points转换到imu下
             *surf_local_map += *transformCloud(surf_last, &Tbl);
             return;
         }
@@ -1542,6 +1543,7 @@ public:
         double timeodom_cur = odom_cur->header.stamp.toSec();
         if(imu_buf[i]->header.stamp.toSec() > timeodom_cur)
             ROS_WARN("Timestamp not synchronized, please check your hardware!");
+
         while(imu_buf[i]->header.stamp.toSec() < timeodom_cur) {
             double t = imu_buf[i]->header.stamp.toSec();
             if (cur_time_imu < 0)
@@ -1768,6 +1770,8 @@ public:
                 latestPoseInfo.time = each_odom_buf[i]->header.stamp.toSec();
                 pose_info_each_frame->push_back(latestPoseInfo);
             }
+
+
             pose_each_frame->push_back(pose_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]);
             pose_info_each_frame->push_back(pose_info_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]);
             int j = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width];
@@ -1900,6 +1904,8 @@ public:
                 dQuat[i-keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1]-1][3] = tmpQuat.z();
                 paraBetweenEachFrame.push_back(dQuat[i-keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1]-1]);
             }
+
+            
             int jj = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width];
 
             Eigen::Vector3d tmpTrans = Ptmp - Eigen::Vector3d(pose_each_frame->points[jj-1].x,

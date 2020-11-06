@@ -23,17 +23,19 @@ private:
     nav_msgs::Odometry odom;
     nav_msgs::Path path;
 
-    pcl::PointCloud<PointType>::Ptr edge_features;
+    pcl::PointCloud<PointType>::Ptr edge_features; //每来一次回调函数，赋值一次
     pcl::PointCloud<PointType>::Ptr surf_features;
     pcl::PointCloud<PointType>::Ptr full_cloud;
 
-    pcl::PointCloud<PointType>::Ptr surf_last_ds;
+    pcl::PointCloud<PointType>::Ptr surf_last_ds; //surf_curr_ds
 
     pcl::KdTreeFLANN<PointType >::Ptr kd_tree_surf_last;
 
     // pose representation: [quaternion: w, x, y, z | transition: x, y, z]
     double abs_pose[7];   //absolute pose from current frame to the first frame
     double rel_pose[7];   //relative pose between two frames
+    //last frame to curr frame transform
+
 
     bool new_edge = false;
     bool new_surf = false;
@@ -50,7 +52,7 @@ private:
     int max_num_iter;
     int scan_match_cnt;
 
-    pcl::PointCloud<PointPoseInfo>::Ptr pose_info_cloud_frame; //pose of each frame
+    pcl::PointCloud<PointPoseInfo>::Ptr pose_info_cloud_frame; //pose of each frame;  pose的index从1开始
     pcl::PointCloud<PointXYZI>::Ptr pose_cloud_frame; //position of each frame
 
     vector<pcl::PointCloud<PointType>::Ptr> surf_frames;
@@ -87,12 +89,12 @@ public:
         sub_surf = nh.subscribe<sensor_msgs::PointCloud2>("/surf_features", 100, &LidarOdometry::laserCloudLessFlatHandler, this);
         sub_full_cloud = nh.subscribe<sensor_msgs::PointCloud2>("/lidar_cloud_cutted", 100, &LidarOdometry::FullPointCloudHandler, this);
 
-        pub_edge = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100);
-        pub_surf = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100);
+        pub_edge = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_corner_last", 100); //curr less sharp points
+        pub_surf = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surf_last", 100);  //curr less flat points
         pub_odom = nh.advertise<nav_msgs::Odometry>("/odom", 100);
-        pub_each_odom = nh.advertise<nav_msgs::Odometry>("/each_odom", 100);
+        pub_each_odom = nh.advertise<nav_msgs::Odometry>("/each_odom", 100); //每相邻两帧的delta_T
         pub_path = nh.advertise<nav_msgs::Path>("/path", 100);
-        pub_full_cloud = nh.advertise<sensor_msgs::PointCloud2>("/full_point_cloud", 100);
+        pub_full_cloud = nh.advertise<sensor_msgs::PointCloud2>("/full_point_cloud", 100); //curr 所有points
     }
 
     ~LidarOdometry(){}
@@ -155,7 +157,9 @@ public:
         down_size_filter_surf.setLeafSize(0.4, 0.4, 0.4);
         down_size_filter_surf_map.setLeafSize(0.4, 0.4, 0.4);
     }
+    
 
+    
     void laserCloudLessSharpHandler(const sensor_msgs::PointCloud2ConstPtr &pointCloudIn) {
         time_new_edge = pointCloudIn->header.stamp.toSec();
         pcl::fromROSMsg(*pointCloudIn, *edge_features);
@@ -265,8 +269,9 @@ public:
 
     void buildLocalMap() {
         surf_from_map->clear();
+
         // Initialization
-        if (pose_cloud_frame->points.size() <= 1) {
+        if (pose_cloud_frame->points.size() <= 1) {//第2帧laser
             //ROS_INFO("Initialization for odometry local map");
             *surf_from_map += *surf_features;
             return;
@@ -294,8 +299,11 @@ public:
         edge_features->clear();
         surf_features->clear();
         full_cloud->clear();
-        if(surf_frames.size() > 7)
+
+        // std::cout<<"before surf_frames.size()= "<<surf_frames.size()<<"\n";
+        if(surf_frames.size() > 7) //有效数据的大小维护为7；超过8个时将最老帧的surf points删除；size的大小一直在增加
             surf_frames[surf_frames.size() - 8]->clear();
+        // std::cout<<"after surf_frames.size()= "<<surf_frames.size()<<"\n\n";
     }
 
     void downSampleCloud() {
@@ -304,8 +312,8 @@ public:
 
         surf_last_ds->clear();
 
-        down_size_filter_surf.setInputCloud(surf_features);
-        down_size_filter_surf.filter(*surf_last_ds);
+        down_size_filter_surf.setInputCloud(surf_features); 
+        down_size_filter_surf.filter(*surf_last_ds); //curr surf laser ds
     }
 
     void savePoses() {
@@ -324,13 +332,13 @@ public:
         tmpPoseInfo.qx = abs_pose[1];
         tmpPoseInfo.qy = abs_pose[2];
         tmpPoseInfo.qz = abs_pose[3];
-        tmpPoseInfo.idx = pose_cloud_frame->points.size();
+        tmpPoseInfo.idx = pose_cloud_frame->points.size(); //每个位姿的index，从1开始
         tmpPoseInfo.time = time_new_surf;
         pose_info_cloud_frame->push_back(tmpPoseInfo);
 
         pcl::PointCloud<PointType>::Ptr surfEachFrame(new pcl::PointCloud<PointType>());
 
-        pcl::copyPointCloud(*surf_last_ds, *surfEachFrame);
+        pcl::copyPointCloud(*surf_last_ds, *surfEachFrame); //第一帧laser初始化时，*surf_last_ds为空,应该是忘了把第一帧的加进来。
 
         surf_frames.push_back(surfEachFrame);
     }
@@ -338,15 +346,15 @@ public:
     void findCorrespondingSurfFeatures() {
         surf_res_cnt = 0;
 
-        for (int i = 0; i < surf_last_ds->points.size(); ++i) {
+        for (int i = 0; i < surf_last_ds->points.size(); ++i) {//curr surf points
             PointType point_sel;
-            transformPoint(&surf_last_ds->points[i], &point_sel);
+            transformPoint(&surf_last_ds->points[i], &point_sel); //point_sel: 当前帧的点转换到原点下。
             vector<int> point_search_idx;
             vector<float> point_search_dists;
             kd_tree_surf_last->nearestKSearch(point_sel, 5, point_search_idx, point_search_dists);
 
             Eigen::Matrix<double, 5, 3> matA0;
-            Eigen::Matrix<double, 5, 1> matB0 = - Eigen::Matrix<double, 5, 1>::Ones();
+            Eigen::Matrix<double, 5, 1> matB0 = - Eigen::Matrix<double, 5, 1>::Ones(); //是不是全1也可以？
 
             if (point_search_dists[4] < 1.0) {
                 PointType center;
@@ -481,7 +489,7 @@ public:
                                   abs_pose[3],
                                   abs_pose[4],
                                   abs_pose[5],
-                                  abs_pose[6]};
+                                  abs_pose[6]}; //当前帧init pose
 
         int match_cnt;
         if(pose_info_cloud_frame->points.size() < 2)
@@ -496,7 +504,9 @@ public:
             problem.AddParameterBlock(transformInc, 4, quatParameterization);
             problem.AddParameterBlock(transformInc + 4, 3);
 
-            findCorrespondingSurfFeatures();
+            findCorrespondingSurfFeatures(); 
+            //对当前帧surf points, 根据上次迭代计算的当前帧位姿，在local surf map中找附近的points
+            //判断平面有效性，根据平面的分布计算点的权重
 
             for (int i = 0; i < surf_res_cnt; ++i) {
                 Eigen::Vector3d currentPt(surf_current_pts->points[i].x,
@@ -508,13 +518,13 @@ public:
                 double normInverse = surf_normal->points[i].intensity;
 
                 ceres::CostFunction *costFunction = LidarPlaneNormIncreFactor::Create(currentPt, norm, normInverse);
-                problem.AddResidualBlock(costFunction, lossFunction, transformInc, transformInc + 4);
+                problem.AddResidualBlock(costFunction, lossFunction, transformInc, transformInc + 4); //ceres计算的是：当前帧位姿
             }
 
             ceres::Solver::Options solverOptions;
             solverOptions.linear_solver_type = ceres::DENSE_QR;
             solverOptions.max_num_iterations = max_num_iter;
-            solverOptions.max_solver_time_in_seconds = 0.015;
+            solverOptions.max_solver_time_in_seconds = 0.015; //是不是有点小？
             solverOptions.minimizer_progress_to_stdout = false;
             solverOptions.check_gradients = false;
             solverOptions.gradient_check_relative_precision = 1e-2;
@@ -522,7 +532,7 @@ public:
             ceres::Solver::Summary summary;
             ceres::Solve( solverOptions, &problem, &summary );
 
-            if(transformInc[0] < 0) {
+            if(transformInc[0] < 0) {//实部>=0, shortest quaternion
                 Eigen::Quaterniond tmpQ(transformInc[0],
                         transformInc[1],
                         transformInc[2],
@@ -534,10 +544,10 @@ public:
                 transformInc[3] = tmpQ.z();
             }
 
-            surf_current_pts->clear();
+            surf_current_pts->clear(); //每次迭代完，清空
             surf_normal->clear();
 
-            abs_pose[0] = transformInc[0];
+            abs_pose[0] = transformInc[0]; //每次迭代前需要用abs_pose[]在local map中找当前帧surf points的对应点
             abs_pose[1] = transformInc[1];
             abs_pose[2] = transformInc[2];
             abs_pose[3] = transformInc[3];
@@ -557,8 +567,11 @@ public:
                 abs_pose[3]);
 
         double dis = (transCur - trans_last_kf).norm();
-        double ang = 2 * acos((quat_last_kF.inverse() * quatCur).w());
-        if(((dis > 0.2 || ang > 0.1) && (pose_cloud_frame->points.size() - kf_num > 1) || (pose_cloud_frame->points.size() - kf_num > 2)) || pose_cloud_frame->points.size() <= 1){
+        double ang = 2 * acos((quat_last_kF.inverse() * quatCur).w()); //四元数到轴角的近似公式
+
+        // std::printf("pose size = %d, kf_num = %d\n", pose_cloud_frame->points.size(), kf_num);
+        if(( (dis > 0.2 || ang > 0.1) && (pose_cloud_frame->points.size() - kf_num > 1) || (pose_cloud_frame->points.size() - kf_num > 2))  
+          || pose_cloud_frame->points.size() <= 1){
             kf = true;
             trans_last_kf = Eigen::Vector3d(abs_pose[4],
                     abs_pose[5],
@@ -611,7 +624,7 @@ public:
         Eigen::Vector3d trans(rel_pose[4], rel_pose[5], rel_pose[6]);
         Eigen::Quaterniond quat(1, 0, 0, 0);
 
-        if(if_to_deskew) {
+        if(if_to_deskew) {//false
             undistortion(surf_features, trans, quat);
             undistortion(edge_features, trans, quat);
             undistortion(full_cloud, trans, quat);
@@ -645,20 +658,20 @@ public:
         } else
             return;
 
-        if (!system_initialized) {
+        if (!system_initialized) {//第1帧laser
             savePoses();
             checkInitialization();
             return;
         }
 
-        poseInitialization();
+        poseInitialization(); //由上一帧的位姿和上上帧到上一帧的delta_pose,预测当前帧的init位姿
         Timer t_odm("LidarOdometry");
         buildLocalMap();
         downSampleCloud();
         updateTransformationWithCeres();
         savePoses();
         computeRelative();
-        if(kf) {
+        if(kf) { 
             kf_num = pose_cloud_frame->points.size();
             publishOdometry();
             publishCloudLast();
