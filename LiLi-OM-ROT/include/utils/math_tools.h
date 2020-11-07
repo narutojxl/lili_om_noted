@@ -121,6 +121,7 @@ inline Eigen::Matrix<T, 3, 4> JacobianV2Q(const Eigen::Quaternion<T> &qua)
     return T(2) * mat;
 }
 
+
 //get quaternion from rotation vector
 template <typename Derived>
 Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)

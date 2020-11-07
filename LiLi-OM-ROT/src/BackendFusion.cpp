@@ -56,8 +56,8 @@ private:
     pcl::PointCloud<PointType>::Ptr full_cloud;
     vector<pcl::PointCloud<PointType>::Ptr> full_clouds_ds;
 
-    pcl::PointCloud<PointType>::Ptr edge_last_ds;
-    pcl::PointCloud<PointType>::Ptr surf_last_ds;
+    pcl::PointCloud<PointType>::Ptr edge_last_ds; //curr less sharp downsample
+    pcl::PointCloud<PointType>::Ptr surf_last_ds; //curr less flat  downsample
 
     vector<pcl::PointCloud<PointType>::Ptr> edge_lasts_ds;
     vector<pcl::PointCloud<PointType>::Ptr> surf_lasts_ds;
@@ -96,11 +96,11 @@ private:
     pcl::PointCloud<PointType>::Ptr global_map;
     pcl::PointCloud<PointType>::Ptr global_map_ds;
 
-    vector<pcl::PointCloud<PointType>::Ptr> edge_frames; //每一帧edge points
-    vector<pcl::PointCloud<PointType>::Ptr> surf_frames; //每一帧surf points
+    vector<pcl::PointCloud<PointType>::Ptr> edge_frames; //保存每一帧edge points
+    vector<pcl::PointCloud<PointType>::Ptr> surf_frames; //保存每一帧surf points
 
-    deque<pcl::PointCloud<PointType>::Ptr> recent_edge_keyframes;
-    deque<pcl::PointCloud<PointType>::Ptr> recent_surf_keyframes;
+    deque<pcl::PointCloud<PointType>::Ptr> recent_edge_keyframes; //每帧下的points是在map下
+    deque<pcl::PointCloud<PointType>::Ptr> recent_surf_keyframes; //每帧下的points是在map下
     int latest_frame_idx;
 
     pcl::KdTreeFLANN<PointType>::Ptr kd_tree_edge_local_map;
@@ -176,7 +176,7 @@ private:
 
     vector<Eigen::Vector3d> Ps;
     vector<Eigen::Vector3d> Vs;
-    vector<Eigen::Matrix3d> Rs;
+    vector<Eigen::Matrix3d> Rs; //Rs, Ps, Vs: imu(旋转，位置，速度)预积分测量值
     vector<Eigen::Vector3d> Bas;
     vector<Eigen::Vector3d> Bgs;
     vector<vector<double>> para_speed_bias;
@@ -190,7 +190,7 @@ private:
 
     double ql2b_w, ql2b_x, ql2b_y, ql2b_z, tl2b_x, tl2b_y, tl2b_z;
 
-    int idx_imu;
+    int idx_imu; //在imu_buf中的index，处理到哪个imu，就指向哪个
 
     //first sliding window optimazition
     bool first_opt;
@@ -227,6 +227,9 @@ private:
     string data_set;
     double runtime = 0;
 
+    //jxl
+    int laser_num = 0;
+
 public:
     BackendFusion(): nh("~") {
         initializeParameters();
@@ -243,9 +246,10 @@ public:
         pub_map = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_map", 2);
         pub_odom = nh.advertise<nav_msgs::Odometry>("/odom_mapped", 2);
         pub_poses = nh.advertise<sensor_msgs::PointCloud2>("/trajectory", 2);
-        pub_edge = nh.advertise<sensor_msgs::PointCloud2>("/map_corner_less_sharp", 2);
-        pub_surf = nh.advertise<sensor_msgs::PointCloud2>("/map_surf_less_flat", 2);
-        pub_full = nh.advertise<sensor_msgs::PointCloud2>("/raw_scan", 2);
+
+        pub_edge = nh.advertise<sensor_msgs::PointCloud2>("/map_corner_less_sharp", 2); //每一帧less sharp在map下
+        pub_surf = nh.advertise<sensor_msgs::PointCloud2>("/map_surf_less_flat", 2); //每一帧less flat在map下
+        pub_full = nh.advertise<sensor_msgs::PointCloud2>("/raw_scan", 2); //每一帧在map下
     }
 
     ~BackendFusion() {}
@@ -701,16 +705,20 @@ public:
     }
 
     void processIMU(double dt, const Eigen::Vector3d &linear_acceleration, const Eigen::Vector3d &angular_velocity) {
-        if(pre_integrations.size() < abs_poses.size()) {
-            pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas.back(), Bgs.back()));
+        //第1帧laser时：1 < 1，不满足; 
+        //包括第2帧以后的laser时：
+        //先把前一个区间imu预积分的结果push保存，对当前的区间构造一个新的Preintegration对象
+        //然后对当前区间的imu meas逐个进行预积分。
+        if(pre_integrations.size() < abs_poses.size()) { 
+            pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas.back(), Bgs.back())); //除了构造函数push一次，只在此处push
             pre_integrations.back()->g_vec_ = -g;
-            Bas.push_back(Bas.back());
+            Bas.push_back(Bas.back()); //除了构造函数push一次，只在此处push
             Bgs.push_back(Bgs.back());
             Rs.push_back(Rs.back());
             Ps.push_back(Ps.back());
             Vs.push_back(Vs.back());
         }
-
+        
         Eigen::Vector3d un_acc_0 = Rs.back() * (acc_0 - Bas.back()) - g;
         Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs.back();
         Rs.back() *= deltaQ(un_gyr * dt).toRotationMatrix();
@@ -719,15 +727,15 @@ public:
         Ps.back() += dt * Vs.back() + 0.5 * dt * dt * un_acc;
         Vs.back() += dt * un_acc;
 
-        pre_integrations.back()->push_back(dt, linear_acceleration, angular_velocity);
+        pre_integrations.back()->push_back(dt, linear_acceleration, angular_velocity); //用当前的imu数据做预积分，更新方差，更新jacobian
 
-        acc_0 = linear_acceleration;
-        gyr_0 = angular_velocity;
+        acc_0 = linear_acceleration; //保存本次imu，下次用的时候就是上一帧acc
+        gyr_0 = angular_velocity;   //保存本次imu，下次用的时候就是上一帧gyr
     }
 
     void optimizeSlidingWindowWithLandMark() {
         if(slide_window_width < 1) return;
-        if(keyframe_idx.size() < slide_window_width) return;
+        if(keyframe_idx.size() < slide_window_width) return; //要往下至少此刻keyframe_idx.size() >=3
 
         first_opt = true;
 
@@ -1288,14 +1296,16 @@ public:
             *surf_local_map += *transformCloud(surf_last, &Tbl);
             return;
         }
+     
+        // std::printf("laser num = %d, pose_cloud_frame = %d,  recent_surf_keyframes = %d\n", laser_num, pose_cloud_frame->points.size(), recent_surf_keyframes.size());
+        //此时 recent_surf_keyframes.size = pose_cloud_frame - 1;
 
-
-        if (recent_surf_keyframes.size() < local_map_width) {
-            recent_edge_keyframes.clear();
+        if (recent_surf_keyframes.size() < local_map_width) {//50
+            recent_edge_keyframes.clear(); //清空
             recent_surf_keyframes.clear();
 
             for (int i = pose_cloud_frame->points.size() - 1; i >= 0; --i) {
-                int idx = (int)pose_cloud_frame->points[i].intensity;
+                int idx = (int)pose_cloud_frame->points[i].intensity; //index
 
                 Eigen::Quaterniond q_po(pose_info_cloud_frame->points[idx].qw,
                                         pose_info_cloud_frame->points[idx].qx,
@@ -1308,6 +1318,7 @@ public:
 
                 Eigen::Quaterniond q_tmp = q_po * q_bl;
                 Eigen::Vector3d t_tmp = q_po * t_bl + t_po;
+                //[q_tmp, t_tmp]: laser帧在map下的位姿
 
                 PointPoseInfo Ttmp;
                 Ttmp.qw = q_tmp.w();
@@ -1318,13 +1329,14 @@ public:
                 Ttmp.y = t_tmp.y();
                 Ttmp.z = t_tmp.z();
 
-                recent_edge_keyframes.push_front(transformCloud(edge_frames[idx], &Ttmp));
+                recent_edge_keyframes.push_front(transformCloud(edge_frames[idx], &Ttmp)); //转换到map下
                 recent_surf_keyframes.push_front(transformCloud(surf_frames[idx], &Ttmp));
+                //从pose_cloud_frame最新的位姿开始，把位姿逐一插入到队头
 
                 if (recent_surf_keyframes.size() >= local_map_width)
                     break;
             }
-        }
+        } 
         // If already more then 50 frames, pop the frames at the beginning
         else {
             if (latest_frame_idx != pose_cloud_frame->points.size() - 1) {
@@ -1363,7 +1375,7 @@ public:
             *surf_local_map += *recent_surf_keyframes[i];
         }
     }
-
+    
     void downSampleCloud() {
         ds_filter_surf_map.setInputCloud(surf_local_map);
         ds_filter_surf_map.filter(*surf_local_map_ds);
@@ -1377,14 +1389,14 @@ public:
         full_clouds_ds.push_back(fullDS);
 
         surf_last_ds->clear();
-        ds_filter_surf.setInputCloud(surf_last);
+        ds_filter_surf.setInputCloud(surf_last); //curr less flat points
         ds_filter_surf.filter(*surf_last_ds);
         pcl::PointCloud<PointType>::Ptr surf(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*surf_last_ds, *surf);
         surf_lasts_ds.push_back(surf);
 
         edge_last_ds->clear();
-        ds_filter_edge.setInputCloud(edge_last);
+        ds_filter_edge.setInputCloud(edge_last); //curr less sharp points
         ds_filter_edge.filter(*edge_last_ds);
         pcl::PointCloud<PointType>::Ptr corner(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*edge_last_ds, *corner);
@@ -1521,7 +1533,7 @@ public:
     }
 
     void saveKeyFramesAndFactors() {
-        abs_poses.push_back(abs_pose);
+        abs_poses.push_back(abs_pose); //除了构造函数，只在此处push
         keyframe_id_in_frame.push_back(each_odom_buf.size()-1);
 
         pcl::PointCloud<PointType>::Ptr cornerEachFrame(new pcl::PointCloud<PointType>());
@@ -1530,16 +1542,16 @@ public:
         pcl::copyPointCloud(*edge_last_ds, *cornerEachFrame);
         pcl::copyPointCloud(*surf_last_ds, *surfEachFrame);
 
-        edge_frames.push_back(cornerEachFrame);
-        surf_frames.push_back(surfEachFrame);
+        edge_frames.push_back(cornerEachFrame); //只在此处push，当前帧压入队列
+        surf_frames.push_back(surfEachFrame);   //只在此处push
 
         //record index of kayframe on imu preintegration poses
-        keyframe_idx.push_back(abs_poses.size()-1);
+        keyframe_idx.push_back(abs_poses.size()-1); //只在此处push, index从0开始
 
         double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
 
         int i = idx_imu;
-        Eigen::Quaterniond tmpOrient;
+        Eigen::Quaterniond tmpOrient; //这个变量没有什么用处
         double timeodom_cur = odom_cur->header.stamp.toSec();
         if(imu_buf[i]->header.stamp.toSec() > timeodom_cur)
             ROS_WARN("Timestamp not synchronized, please check your hardware!");
@@ -1570,6 +1582,7 @@ public:
                                            imu_buf[i]->orientation.y,
                                            imu_buf[i]->orientation.z);
             processIMU(dt, Eigen::Vector3d(dx, dy, dz), Eigen::Vector3d(rx, ry, rz));
+
             i++;
             if(i >= imu_buf.size())
                 break;
@@ -1577,9 +1590,14 @@ public:
 
         imu_idx_in_kf.push_back(i - 1);
 
-        if(i < imu_buf.size()) {
+        if(i < imu_buf.size()) {//说明imu_buf[i]->header.stamp.toSec() >= timeodom_cur
             double dt1 = timeodom_cur - cur_time_imu;
             double dt2 = imu_buf[i]->header.stamp.toSec() - timeodom_cur;
+            //时间从小到大依次是:
+            //curr_time_imu   timeodom_cur    i
+            //      |              |          |
+            //-------------------------------------->t
+            //由curr_time_imu和i时刻的imu，线性插值出timeodom_curr时刻的imu(角度, acc, gyr)
 
             double w1 = dt2 / (dt1 + dt2);
             double w2 = dt1 / (dt1 + dt2);
@@ -1605,6 +1623,7 @@ public:
             rx = w1 * rx + w2 * imu_buf[i]->angular_velocity.x;
             ry = w1 * ry + w2 * imu_buf[i]->angular_velocity.y;
             rz = w1 * rz + w2 * imu_buf[i]->angular_velocity.z;
+
             processIMU(dt1, Eigen::Vector3d(dx, dy, dz), Eigen::Vector3d(rx, ry, rz));
         }
         cur_time_imu = timeodom_cur;
@@ -1627,8 +1646,10 @@ public:
         latestPose.x = Ps.back().x();
         latestPose.y = Ps.back().y();
         latestPose.z = Ps.back().z();
-        latestPose.intensity = pose_cloud_frame->points.size();
-        pose_cloud_frame->push_back(latestPose);
+        latestPose.intensity = pose_cloud_frame->points.size(); //index从0开始
+        std::printf("pose_cloud index = %d\n", latestPose.intensity);
+        pose_cloud_frame->push_back(latestPose); //只在此处push
+        //保存：Ps[]位姿
 
         latestPoseInfo.x = Ps.back().x();
         latestPoseInfo.y = Ps.back().y();
@@ -1638,14 +1659,18 @@ public:
         latestPoseInfo.qx = qs_last.x();
         latestPoseInfo.qy = qs_last.y();
         latestPoseInfo.qz = qs_last.z();
-        latestPoseInfo.idx = pose_cloud_frame->points.size();
-        latestPoseInfo.time = time_new_odom;
+        latestPoseInfo.idx = pose_cloud_frame->points.size(); //index从1开始？
+        std::printf("pose_info_cloud_index = %d\n", latestPoseInfo.idx);
+        latestPoseInfo.time = time_new_odom; //laser odom发出的每一odometry时刻
 
-        pose_info_cloud_frame->push_back(latestPoseInfo);
+        pose_info_cloud_frame->push_back(latestPoseInfo); //只在此处push
+        //保存Ps[], Rs[]位姿
+
+        
 
         //optimize sliding window
         num_kf_sliding++;
-        if(num_kf_sliding >= 1 || !first_opt) {
+        if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足
             optimizeSlidingWindowWithLandMark();
             num_kf_sliding = 0;
         }
@@ -1905,7 +1930,7 @@ public:
                 paraBetweenEachFrame.push_back(dQuat[i-keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1]-1]);
             }
 
-            
+
             int jj = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width];
 
             Eigen::Vector3d tmpTrans = Ptmp - Eigen::Vector3d(pose_each_frame->points[jj-1].x,
@@ -2008,7 +2033,7 @@ public:
     }
 
     void correctPoses() {
-        if (loop_closed == true) {
+        if (loop_closed == true) {//检测到了闭环
             recent_edge_keyframes.clear();
             recent_surf_keyframes.clear();
 
@@ -2162,7 +2187,7 @@ public:
         }
 
 
-        PointPoseInfo Tbl;
+        PointPoseInfo Tbl; //not used
         Tbl.qw = q_bl.w();
         Tbl.qx = q_bl.x();
         Tbl.qy = q_bl.y();
@@ -2174,8 +2199,8 @@ public:
         // publish the corner and surf feature points in lidar_init frame
         if (pub_edge.getNumSubscribers()) {
             for (int i = 0; i < edge_last_ds->points.size(); ++i) {
-                transformPoint(&edge_last_ds->points[i], &edge_last_ds->points[i], q_bl, t_bl);
-                transformPoint(&edge_last_ds->points[i], &edge_last_ds->points[i]);
+                transformPoint(&edge_last_ds->points[i], &edge_last_ds->points[i], q_bl, t_bl); //转换到对应时刻的imu下
+                transformPoint(&edge_last_ds->points[i], &edge_last_ds->points[i]); //根据计算出来的位姿，转换到map下
             }
             pcl::toROSMsg(*edge_last_ds, msgs);
             msgs.header.stamp = ros::Time().fromSec(time_new_odom);
@@ -2499,15 +2524,19 @@ public:
 
             //cout<<"map_pub_cnt: "<<++map_pub_cnt<<endl;
 
+            laser_num++;
+
             Timer t_map("BackendFusion");
             buildLocalMapWithLandMark();
-            downSampleCloud();
+            downSampleCloud();  //local map降采样，当前帧压入队列
             saveKeyFramesAndFactors();
             publishOdometry();
             clearCloud();
             //t_map.tic_toc();
             runtime += t_map.toc();
             //cout<<"BackendFusion average run time: "<<runtime / each_odom_buf.size()<<endl;
+
+            std::printf("laser index =%d done!\n\n", laser_num);
         }
     }
 };

@@ -233,5 +233,9 @@ CMakeLists.txt.user
 
 
 build/*
+LiLi-OM-ROT/build/*
+LiLi-OM/build/*
+
+
 
 

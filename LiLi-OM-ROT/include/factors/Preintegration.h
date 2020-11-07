@@ -50,7 +50,6 @@ public:
         nh.param<double>("/IMU/acc_w", acc_w, 0.000011);
         nh.param<double>("/IMU/gyr_w", gyr_w, 0.000001);
 
-        //和lio-mapping一样
         covariance_ = 0.001 * Matrix<double, 15, 15>::Identity();
         g_vec_ = -Eigen::Vector3d(0, 0, 9.805);
 
@@ -62,7 +61,15 @@ public:
         noise_.block<3, 3>(12, 12) = (acc_w * acc_w) * Matrix3d::Identity();
         noise_.block<3, 3>(15, 15) = (gyr_w * gyr_w) * Matrix3d::Identity();
     }
+    
 
+    //||=============================================||
+    //||                                             ||
+    //||本文件和lio-mapping的IntegrationBase.h完全一样  || 
+    //||                                             ||
+    //||=============================================||
+
+    //用当前的imu数据做预积分，更新方差，更新jacobian
     void push_back(double dt, const Vector3d &acc, const Vector3d &gyr) {
         dt_buf_.push_back(dt);
         acc_buf_.push_back(acc);
@@ -122,10 +129,12 @@ public:
                     a_1_x(2), 0, -a_1_x(0),
                     -a_1_x(1), a_1_x(0), 0;
 
+            //F = I + dF*dt
             MatrixXd F = MatrixXd::Zero(15, 15);
             F.block<3, 3>(0, 0) = Matrix3d::Identity();
             F.block<3, 3>(0, 3) = -0.25*delta_q.toRotationMatrix() * R_a_0_x * dt * dt +
                     -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x * (Matrix3d::Identity() - R_w_x * dt) * dt * dt;
+
             F.block<3, 3>(0, 6) = MatrixXd::Identity(3, 3) * dt;
             F.block<3, 3>(0, 9) = -0.25*(delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) * dt * dt;
             F.block<3, 3>(0, 12) = -0.1667*result_delta_q.toRotationMatrix() * R_a_1_x * dt * dt * -dt;
@@ -186,6 +195,8 @@ public:
         gyr0_ = gyr1_;
     }
 
+    //计算imu预积分测量残差 +　bias更新的残差
+    //liom在滑窗内优化时，会对每相邻两个优化位姿之间计算imu预积分残差,见Estimator::SolveOptimization()
     Matrix<double, 15, 1> evaluate(const Vector3d &Pi,
                                    const Quaterniond &Qi,
                                    const Vector3d &Vi,
@@ -202,26 +213,27 @@ public:
 
         residuals.setZero();
 
-        Matrix3d dp_dba = jacobian_.block<3, 3>(O_P, O_BA);
-        Matrix3d dp_dbg = jacobian_.block<3, 3>(O_P, O_BG);
+        Matrix3d dp_dba = jacobian_.block<3, 3>(O_P, O_BA); //位置预积分测量delta_p对ba雅克比  d: 表示偏导的意思 
+        Matrix3d dp_dbg = jacobian_.block<3, 3>(O_P, O_BG); //位置预积分测量delta_p对bg雅克比
 
-        Matrix3d dq_dbg = jacobian_.block<3, 3>(O_R, O_BG);
+        Matrix3d dq_dbg = jacobian_.block<3, 3>(O_R, O_BG); //旋转预积分测量delta_r对bg雅克比
 
-        Matrix3d dv_dba = jacobian_.block<3, 3>(O_V, O_BA);
-        Matrix3d dv_dbg = jacobian_.block<3, 3>(O_V, O_BG);
+        Matrix3d dv_dba = jacobian_.block<3, 3>(O_V, O_BA); //速度预积分测量delta_v对ba雅克比
+        Matrix3d dv_dbg = jacobian_.block<3, 3>(O_V, O_BG); //速度预积分测量delta_v对bg雅克比
 
         Vector3d dba = Bai - linearized_ba_;
-        Vector3d dbg = Bgi - linearized_bg_; // NOTE: optimized one minus the linearized one
+        Vector3d dbg = Bgi - linearized_bg_; // NOTE: optimized one minus(减去) the linearized one
 
-        Quaterniond corrected_delta_q = delta_q_ * deltaQ(dq_dbg * dbg);
+        Quaterniond corrected_delta_q = delta_q_ * deltaQ(dq_dbg * dbg); //bias updata对imu预积分测量的更新，预积分paper44式
         Vector3d corrected_delta_v = delta_v_ + dv_dba * dba + dv_dbg * dbg;
         Vector3d corrected_delta_p = delta_p_ + dp_dba * dba + dp_dbg * dbg;
-
+        
+        //预积分paper45式 
         residuals.block<3, 1>(O_P, 0) =
-                Qi.inverse() * (-0.5 * g_vec_ * sum_dt_ * sum_dt_ + Pj - Pi - Vi * sum_dt_) - corrected_delta_p;
-        residuals.block<3, 1>(O_R, 0) = 2.0 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).normalized().vec();
-        residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (-g_vec_ * sum_dt_ + Vj - Vi) - corrected_delta_v;
-        residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
+                Qi.inverse() * (-0.5 * g_vec_ * sum_dt_ * sum_dt_ + Pj - Pi - Vi * sum_dt_) - corrected_delta_p; //预积分位置测量残差项
+        residuals.block<3, 1>(O_R, 0) = 2.0 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).normalized().vec(); //预积分旋转测量残差项
+        residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (-g_vec_ * sum_dt_ + Vj - Vi) - corrected_delta_v; //预积分速度测量残差项
+        residuals.block<3, 1>(O_BA, 0) = Baj - Bai;  //bias delta残差  预积分paper48式 
         residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
 
         return residuals;

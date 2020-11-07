@@ -33,6 +33,10 @@ private:
 
     // pose representation: [quaternion: w, x, y, z | transition: x, y, z]
     double abs_pose[7];   //absolute pose from current frame to the first frame
+    //laser odom的原点是：第一帧laser时刻的laser坐标系，求得的位姿是laser帧在odom下的位姿
+    //不同于后端，后端的原点map是：第一帧laser时刻的imu坐标系，求得的位姿是关键帧时刻的imu在map下的位姿
+
+
     double rel_pose[7];   //relative pose between two frames
     //last frame to curr frame transform
 
@@ -322,7 +326,7 @@ public:
         tmpPose.y = abs_pose[5];
         tmpPose.z = abs_pose[6];
         tmpPose.intensity = pose_cloud_frame->points.size();
-        pose_cloud_frame->push_back(tmpPose);
+        pose_cloud_frame->push_back(tmpPose); //只在此处push
 
         PointPoseInfo tmpPoseInfo;
         tmpPoseInfo.x = abs_pose[4];
@@ -334,7 +338,7 @@ public:
         tmpPoseInfo.qz = abs_pose[3];
         tmpPoseInfo.idx = pose_cloud_frame->points.size(); //每个位姿的index，从1开始
         tmpPoseInfo.time = time_new_surf;
-        pose_info_cloud_frame->push_back(tmpPoseInfo);
+        pose_info_cloud_frame->push_back(tmpPoseInfo); //只在此处push
 
         pcl::PointCloud<PointType>::Ptr surfEachFrame(new pcl::PointCloud<PointType>());
 
@@ -570,7 +574,9 @@ public:
         double ang = 2 * acos((quat_last_kF.inverse() * quatCur).w()); //四元数到轴角的近似公式
 
         // std::printf("pose size = %d, kf_num = %d\n", pose_cloud_frame->points.size(), kf_num);
-        if(( (dis > 0.2 || ang > 0.1) && (pose_cloud_frame->points.size() - kf_num > 1) || (pose_cloud_frame->points.size() - kf_num > 2))  
+        if( ((dis > 0.2 || ang > 0.1) && 
+             (pose_cloud_frame->points.size() - kf_num > 1) || 
+             (pose_cloud_frame->points.size() - kf_num > 2))  
           || pose_cloud_frame->points.size() <= 1){
             kf = true;
             trans_last_kf = Eigen::Vector3d(abs_pose[4],
