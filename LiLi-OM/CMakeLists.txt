@@ -21,8 +21,18 @@ find_package(catkin REQUIRED COMPONENTS
   livox_ros_driver
 )
 
-find_package(Eigen3 REQUIRED)
-find_package(Ceres REQUIRED)
+
+# find_package(Eigen3 REQUIRED) #default
+list(APPEND CMAKE_PREFIX_PATH "/home/jxl/third_softwares/eigen_3_3_7/INSTALL_DIR/share/eigen3/cmake")
+#set(CMAKE_PREFIX_PATH "/home/jxl/third_softwares/eigen_3_3_7/INSTALL_DIR/share/eigen3/cmake")
+find_package(Eigen3 3.3.7 REQUIRED)
+
+
+# find_package(Ceres REQUIRED) #default
+find_package(Ceres REQUIRED PATHS "/home/jxl/third_softwares/ceres-solver-2.0.0/INSTALL/")
+
+
+
 find_package(GTSAM REQUIRED)
 
 message(STATUS "Using catkin version ${catkin_VERSION}")

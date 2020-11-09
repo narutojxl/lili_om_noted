@@ -81,11 +81,14 @@ private:
     pcl::PointCloud<PointType>::Ptr his_key_frames_ds;
 
     pcl::PointCloud<PointXYZI>::Ptr pose_cloud_frame; //position of keyframe
+    //保存：Ps[]位姿
 
     // Usage for PointPoseInfo
     // position: x, y, z
     // orientation: qw - w, qx - x, qy - y, qz - z
     pcl::PointCloud<PointPoseInfo>::Ptr pose_info_cloud_frame; //pose of keyframe
+    //保存Ps[], Rs[]位姿
+
 
     pcl::PointCloud<PointXYZI>::Ptr pose_each_frame; //position of each frame
     pcl::PointCloud<PointPoseInfo>::Ptr pose_info_each_frame; //pose of each frame
@@ -199,9 +202,9 @@ private:
     MarginalizationInfo *last_marginalization_info;
     vector<double *> last_marginalization_parameter_blocks;
 
-    double **tmpQuat;
-    double **tmpTrans;
-    double **tmpSpeedBias;
+    double **tmpQuat; //大小： 3 * 4
+    double **tmpTrans; //大小： 3 * 3
+    double **tmpSpeedBias; //大小： 3 * 9
 
     bool marg = true;
 
@@ -709,9 +712,9 @@ public:
         //包括第2帧以后的laser时：
         //先把前一个区间imu预积分的结果push保存，对当前的区间构造一个新的Preintegration对象
         //然后对当前区间的imu meas逐个进行预积分。
-        if(pre_integrations.size() < abs_poses.size()) { 
+        if(pre_integrations.size() < abs_poses.size()) {
             pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas.back(), Bgs.back())); //除了构造函数push一次，只在此处push
-            pre_integrations.back()->g_vec_ = -g;
+            pre_integrations.back()->g_vec_ = -g; //g_vec_= [0, 0, -9.8]
             Bas.push_back(Bas.back()); //除了构造函数push一次，只在此处push
             Bgs.push_back(Bgs.back());
             Rs.push_back(Rs.back());
@@ -735,12 +738,13 @@ public:
 
     void optimizeSlidingWindowWithLandMark() {
         if(slide_window_width < 1) return;
-        if(keyframe_idx.size() < slide_window_width) return; //要往下至少此刻keyframe_idx.size() >=3
+        if(keyframe_idx.size() < slide_window_width) return; //要往下执行至少此刻keyframe_idx.size() >=3
 
         first_opt = true;
 
 
         int windowSize = keyframe_idx[keyframe_idx.size()-1] - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
+        //windowSize == 3
 
         kd_tree_surf_local_map->setInputCloud(surf_local_map_ds);
         kd_tree_edge_local_map->setInputCloud(edge_local_map_ds);
@@ -752,6 +756,7 @@ public:
             ceres::Problem problem;
 
             //eigen to double
+            //把滑窗内对应位姿的PVQBaBg置入tmpQuat，tmpTrans，tmpSpeedBias，abs_poses
             for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx.back(); i++){
 
                 Eigen::Quaterniond tmpQ(Rs[i]);
@@ -783,7 +788,7 @@ public:
                 problem.AddParameterBlock(tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]], 9);
             }
 
-            abs_pose = abs_poses.back();
+            abs_pose = abs_poses.back(); //abs_pose: 当前帧laser在map下位姿
 
             if(true) {
                 if (last_marginalization_info) {
@@ -794,7 +799,7 @@ public:
                 }
             }
 
-            if(!marg) {
+            if(!marg) {//闭环correctPoses()后才为false, 否则一直为true
                 //add prior factor
                 for(int i = 0; i < slide_window_width - 1; i++) {
 
@@ -807,7 +812,8 @@ public:
                 }
 
             }
-
+            
+            //滑窗内每相邻两帧imu预积分残差
             for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx < keyframe_idx.back(); ++idx) {
                 //add imu factor
                 ImuFactor *imuFactor = new ImuFactor(pre_integrations[idx+1]);
@@ -817,8 +823,6 @@ public:
                         tmpTrans[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]],
                         tmpQuat[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]],
                         tmpSpeedBias[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
-
-
             }
 
             for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx <= keyframe_idx.back(); idx++) {
@@ -907,7 +911,7 @@ public:
             }
         }
 
-        MarginalizationInfo *marginalization_info = new MarginalizationInfo();
+        MarginalizationInfo *marginalization_info = new MarginalizationInfo(); //marg_info赋值
 
         if (last_marginalization_info) {
             vector<int> drop_set;
@@ -1077,7 +1081,7 @@ public:
         if (last_marginalization_info) {
             delete last_marginalization_info;
         }
-        last_marginalization_info = marginalization_info;
+        last_marginalization_info = marginalization_info; 
         last_marginalization_parameter_blocks = parameter_blocks;
 
 
@@ -1331,7 +1335,7 @@ public:
 
                 recent_edge_keyframes.push_front(transformCloud(edge_frames[idx], &Ttmp)); //转换到map下
                 recent_surf_keyframes.push_front(transformCloud(surf_frames[idx], &Ttmp));
-                //从pose_cloud_frame最新的位姿开始，把位姿逐一插入到队头
+                //从pose_cloud_frame最新的位姿开始，把pose_cloud_frame里的每一帧位姿点云逐一插入到队头
 
                 if (recent_surf_keyframes.size() >= local_map_width)
                     break;
@@ -1534,7 +1538,7 @@ public:
 
     void saveKeyFramesAndFactors() {
         abs_poses.push_back(abs_pose); //除了构造函数，只在此处push
-        keyframe_id_in_frame.push_back(each_odom_buf.size()-1);
+        keyframe_id_in_frame.push_back(each_odom_buf.size()-1); //只在此处push, index从0开始
 
         pcl::PointCloud<PointType>::Ptr cornerEachFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr surfEachFrame(new pcl::PointCloud<PointType>());
@@ -1670,7 +1674,7 @@ public:
 
         //optimize sliding window
         num_kf_sliding++;
-        if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足
+        if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足, 每次都会执行
             optimizeSlidingWindowWithLandMark();
             num_kf_sliding = 0;
         }

@@ -69,5 +69,6 @@
         "set": "cpp",
         "string": "cpp",
         "*.ipp": "cpp"
-    }
+    },
+    "ros.distro": "kinetic"
 }
