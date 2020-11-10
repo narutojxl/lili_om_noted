@@ -67,13 +67,15 @@ private:
     pcl::PointCloud<PointType>::Ptr edge_local_map_ds;
     pcl::PointCloud<PointType>::Ptr surf_local_map_ds;
 
-    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_cur_pts;
-    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_match_j;
-    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_match_l;
 
-    vector<pcl::PointCloud<PointType>::Ptr> vec_surf_cur_pts;
-    vector<pcl::PointCloud<PointType>::Ptr> vec_surf_normal;
-    vector<vector<double>> vec_surf_scores;
+    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_cur_pts; //大小: 滑窗大小, 3个
+    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_match_j; //大小: 滑窗大小, 3个
+    vector<pcl::PointCloud<PointType>::Ptr> vec_edge_match_l; //大小: 滑窗大小, 3个
+
+    vector<pcl::PointCloud<PointType>::Ptr> vec_surf_cur_pts; //大小: 滑窗大小, 3个
+    vector<pcl::PointCloud<PointType>::Ptr> vec_surf_normal; //大小: 滑窗大小, 3个
+    vector<vector<double>> vec_surf_scores; //大小: 滑窗大小, 3个
+
 
     pcl::PointCloud<PointType>::Ptr latest_key_frames;
     pcl::PointCloud<PointType>::Ptr latest_key_frames_ds;
@@ -120,11 +122,12 @@ private:
     pcl::VoxelGrid<PointType> ds_filter_his_frames;
     pcl::VoxelGrid<PointType> ds_filter_global_map;
 
-    vector<int> vec_edge_res_cnt;
-    vector<int> vec_surf_res_cnt;
+    vector<int> vec_edge_res_cnt; //大小: 滑窗大小, 3个
+    vector<int> vec_surf_res_cnt; //大小: 滑窗大小, 3个
+
 
     // Form of the transformation
-    vector<double> abs_pose;
+    vector<double> abs_pose; //当前处理laser对应的imu帧在map下的位姿
     vector<double> last_pose;
 
     mutex mutual_exclusion;
@@ -756,7 +759,7 @@ public:
             ceres::Problem problem;
 
             //eigen to double
-            //把滑窗内对应位姿的PVQBaBg置入tmpQuat，tmpTrans，tmpSpeedBias，abs_poses
+            //把滑窗内每个对应位姿的P V Q Ba Bg置入tmpQuat，tmpTrans，tmpSpeedBias，abs_poses
             for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx.back(); i++){
 
                 Eigen::Quaterniond tmpQ(Rs[i]);
@@ -801,7 +804,7 @@ public:
 
             if(!marg) {//闭环correctPoses()后才为false, 否则一直为true
                 //add prior factor
-                for(int i = 0; i < slide_window_width - 1; i++) {
+                for(int i = 0; i < slide_window_width - 1; i++) { //TODO:为何-1
 
                     vector<double> tmps;
                     for(int j = 0; j < 9; j++) {
@@ -812,7 +815,11 @@ public:
                 }
 
             }
-            
+
+            //NOTE:
+            //滑窗内位姿的含义: laser帧时刻的imu在imu0(map)下的位姿
+            //tmpQuat, tmpTrans, tmpSpeedBias
+
             //滑窗内每相邻两帧imu预积分残差
             for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx < keyframe_idx.back(); ++idx) {
                 //add imu factor
@@ -824,7 +831,8 @@ public:
                         tmpQuat[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]],
                         tmpSpeedBias[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
             }
-
+            
+            //滑窗内每帧imu对应的laser points产生的laser残差
             for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx <= keyframe_idx.back(); idx++) {
                 Eigen::Quaterniond Q2 = Eigen::Quaterniond(tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][0],
                         tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][1],
@@ -834,34 +842,33 @@ public:
                         tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][1],
                         tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][2]);
 
-                Q2 = Q2 * q_lb.inverse();
+                Q2 = Q2 * q_lb.inverse(); //laser在map(imu0)下位姿
                 T2 = T2 - Q2 * t_lb;
 
                 int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width];
                 if (surf_local_map_ds->points.size() > 50 && edge_local_map_ds->points.size() > 0) {
-                    findCorrespondingSurfFeatures(idx-1, Q2, T2);
+                    findCorrespondingSurfFeatures(idx-1, Q2, T2); //在local map中，根据idx位姿初值，找idx帧对应的surf、sharp points，计算残差，法向量等
                     findCorrespondingCornerFeatures(idx-1, Q2, T2);
 
-                    for (int i = 0; i < vec_edge_res_cnt[idVec]; ++i) {
+                    for (int i = 0; i < vec_edge_res_cnt[idVec]; ++i) {//对于有效的sharp points
                         Eigen::Vector3d currentPt(vec_edge_cur_pts[idVec]->points[i].x,
                                                   vec_edge_cur_pts[idVec]->points[i].y,
                                                   vec_edge_cur_pts[idVec]->points[i].z);
                         Eigen::Vector3d lastPtJ(vec_edge_match_j[idVec]->points[i].x,
                                                 vec_edge_match_j[idVec]->points[i].y,
-                                                vec_edge_match_j[idVec]->points[i].z);
+                                                vec_edge_match_j[idVec]->points[i].z); //在map下
                         Eigen::Vector3d lastPtL(vec_edge_match_l[idVec]->points[i].x,
                                                 vec_edge_match_l[idVec]->points[i].y,
-                                                vec_edge_match_l[idVec]->points[i].z);
+                                                vec_edge_match_l[idVec]->points[i].z); //在map下
 
                         ceres::CostFunction *costFunction = LidarEdgeFactor::Create(currentPt, lastPtJ, lastPtL, q_lb, t_lb, vec_edge_cur_pts[idVec]->points[i].intensity * 200 / vec_edge_res_cnt[idVec]);
-
-
+                        //计算sharp points到直线的距离(残差)
 
                         problem.AddResidualBlock(costFunction, lossFunction, tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]],
                                 tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
                     }
 
-                    for (int i = 0; i < vec_surf_res_cnt[idVec]; ++i) {
+                    for (int i = 0; i < vec_surf_res_cnt[idVec]; ++i) {//对于有效的flat points
                         Eigen::Vector3d currentPt(vec_surf_cur_pts[idVec]->points[i].x,
                                                   vec_surf_cur_pts[idVec]->points[i].y,
                                                   vec_surf_cur_pts[idVec]->points[i].z);
@@ -872,7 +879,7 @@ public:
 
                         //LidarPlaneNormAnalyticFactor *costFunction = new LidarPlaneNormAnalyticFactor(currentPt, norm, normInverse);
                         ceres::CostFunction *costFunction = LidarPlaneNormFactor::Create(currentPt, norm, q_lb, t_lb, normInverse, vec_surf_scores[idVec][i] * 1000 / vec_surf_res_cnt[idVec]);
-
+                        //计算flat points到平面的距离(残差)
 
                         problem.AddResidualBlock(costFunction, lossFunction, tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]],
                                 tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
@@ -897,7 +904,7 @@ public:
             ceres::Solve(options, &problem, &summary);
 
             for(int i = 0; i < windowSize; i++) {
-                if(tmpQuat[i][0] < 0) {
+                if(tmpQuat[i][0] < 0) { //shortest　quaternion
                     Eigen::Quaterniond tmp(tmpQuat[i][0],
                             tmpQuat[i][1],
                             tmpQuat[i][2],
@@ -913,7 +920,7 @@ public:
 
         MarginalizationInfo *marginalization_info = new MarginalizationInfo(); //marg_info赋值
 
-        if (last_marginalization_info) {
+        if (last_marginalization_info) {//第一次执行滑窗时为false, 直到后面才赋值
             vector<int> drop_set;
             for (int i = 0; i < static_cast<int>(last_marginalization_parameter_blocks.size()); i++) {
                 if (last_marginalization_parameter_blocks[i] == tmpTrans[0] ||
@@ -933,15 +940,15 @@ public:
         }
 
 
-        if(!marg) {
+        if(!marg) {//闭环correctPoses()后才为false, 否则一直为true
             //add prior factor
             for(int i = 0; i < slide_window_width - 1; i++) {
 
-                vector<double*> tmp;
+                vector<double*> tmp; //not used
                 tmp.push_back(tmpTrans[i]);
                 tmp.push_back(tmpQuat[i]);
 
-                vector<int> drop_set;
+                vector<int> drop_set; //not used
                 if(i == 0) {
                     drop_set.push_back(0);
                     drop_set.push_back(1);
@@ -961,7 +968,7 @@ public:
                 }
                 ceres::CostFunction *speedBiasPriorFactor = SpeedBiasPriorFactorAutoDiff::Create(tmps);
                 ResidualBlockInfo *residual_block_info1 = new ResidualBlockInfo(speedBiasPriorFactor, NULL,
-                                                                                tmp1,
+                                                                                tmp1, //param block
                                                                                 drop_set1);
 
                 marginalization_info->AddResidualBlockInfo(residual_block_info1);
@@ -969,7 +976,9 @@ public:
 
             marg = true;
         }
+    
 
+        //!窗口内的第一个位姿是要marg的位姿
 
         //imu
         ImuFactor *imuFactor = new ImuFactor(pre_integrations[keyframe_idx[keyframe_idx.size()-slide_window_width]+1]);
@@ -978,14 +987,15 @@ public:
                                                                        vector<double *>{
                                                                            tmpTrans[0],
                                                                            tmpQuat[0],
-                                                                           tmpSpeedBias[0],
+                                                                           tmpSpeedBias[0], //第一个位姿相关的参数块
                                                                            tmpTrans[1],
                                                                            tmpQuat[1],
-                                                                           tmpSpeedBias[1]
+                                                                           tmpSpeedBias[1] //第二个位姿相关的参数块
                                                                        },
-                                                                       vector<int>{0, 1, 2});
-
+                                                                       vector<int>{0, 1, 2}); 
+        //窗口内第一个位姿和第二个位姿之间的imu预积分残差
         marginalization_info->AddResidualBlockInfo(residual_block_info);
+        //添加到marg对象中
 
 
         //lidar
@@ -996,11 +1006,12 @@ public:
                 vector<double*> tmp;
                 tmp.push_back(tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
                 tmp.push_back(tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
+                //滑窗内某帧imu位姿, index = idx, idx从滑窗内的第一个位姿开始, 直到滑窗内最后一个位姿
 
-                for (int i = 0; i < vec_surf_res_cnt[idVec]; ++i) {
+                for (int i = 0; i < vec_surf_res_cnt[idVec]; ++i) {//对于有效的flat points
                     Eigen::Vector3d currentPt(vec_surf_cur_pts[idVec]->points[i].x,
                                               vec_surf_cur_pts[idVec]->points[i].y,
-                                              vec_surf_cur_pts[idVec]->points[i].z);
+                                              vec_surf_cur_pts[idVec]->points[i].z); //在laser下
                     Eigen::Vector3d norm(vec_surf_normal[idVec]->points[i].x,
                                          vec_surf_normal[idVec]->points[i].y,
                                          vec_surf_normal[idVec]->points[i].z);
@@ -1021,10 +1032,10 @@ public:
                 }
 
 
-                for (int i = 0; i < vec_edge_res_cnt[idVec]; ++i) {
+                for (int i = 0; i < vec_edge_res_cnt[idVec]; ++i) {//对于有效的sharp points
                     Eigen::Vector3d currentPt(vec_edge_cur_pts[idVec]->points[i].x,
                                               vec_edge_cur_pts[idVec]->points[i].y,
-                                              vec_edge_cur_pts[idVec]->points[i].z);
+                                              vec_edge_cur_pts[idVec]->points[i].z); //在laser下
                     Eigen::Vector3d lastPtJ(vec_edge_match_j[idVec]->points[i].x,
                                             vec_edge_match_j[idVec]->points[i].y,
                                             vec_edge_match_j[idVec]->points[i].z);
@@ -1065,11 +1076,12 @@ public:
             vec_surf_scores[idVec].clear();
         }
 
-        marginalization_info->PreMarginalize();
-        marginalization_info->Marginalize();
+        marginalization_info->PreMarginalize(); //对marg对象的所有ResidualBlockInfo计算每个残差项，以及残差对优化变量的雅克比
 
-        std::unordered_map<long, double *> addr_shift;
-        for (int i = 1; i < windowSize; ++i) {
+        marginalization_info->Marginalize(); //marg滑窗的第一个位姿
+        
+        std::unordered_map<long, double *> addr_shift; //<每个参数块的地址, 指向的raw data>  
+        for (int i = 1; i < windowSize; ++i) { //TODO: 地址指向的data ?
             addr_shift[reinterpret_cast<long>(tmpTrans[i])] = tmpTrans[i-1];
             addr_shift[reinterpret_cast<long>(tmpQuat[i])] = tmpQuat[i-1];
             addr_shift[reinterpret_cast<long>(tmpSpeedBias[i])] = tmpSpeedBias[i-1];
@@ -1109,15 +1121,18 @@ public:
                     tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1],
                     tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2],
                     tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][3]).normalized().inverse() *
-                    Eigen::Quaterniond(Rs[i]);
+                    Eigen::Quaterniond(Rs[i]); 
             double qnorm = dq.vec().norm();
+            //本次优化前后, 滑窗内每个位姿的变化量
 
+            //用优化后的结果赋值Ps[i], Rs[i], Vs[i], Bas[i], Bgs[i]
+            //用优化后的结果赋值abs_poses[i], para_speed_bias[i]
 
             if(pnorm < 10) {
                 abs_poses[i][4] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][0];
                 abs_poses[i][5] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1];
                 abs_poses[i][6] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2];
-
+                
                 Ps[i][0] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][0];
                 Ps[i][1] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1];
                 Ps[i][2] = tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2];
@@ -1129,7 +1144,7 @@ public:
                 abs_poses[i][1] = tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1];
                 abs_poses[i][2] = tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2];
                 abs_poses[i][3] = tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][3];
-
+                
                 Rs[i] = Eigen::Quaterniond (tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][0],
                         tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1],
                         tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2],
@@ -1141,12 +1156,13 @@ public:
                 for(int j = 0; j < 3; j++) {
                     para_speed_bias[i][j] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][j];
                 }
+
                 Vs[i][0] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][0];
                 Vs[i][1] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][1];
                 Vs[i][2] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2];
             } else
                 ROS_WARN("bad optimization result of v!!!!!!!!!!!!!");
-
+            
             if(abs(dba1) < 22) {
                 para_speed_bias[i][3] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][3];
                 Bas[i][0] = para_speed_bias[i][3];
@@ -1164,7 +1180,7 @@ public:
                 Bas[i][2] = para_speed_bias[i][5];
             } else
                 ROS_WARN("bad ba3!!!!!!!!!!");
-
+            
             if(abs(dbg1) < 22) {
                 para_speed_bias[i][6] = tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][6];
                 Bgs[i][0] = para_speed_bias[i][6];
@@ -1189,9 +1205,9 @@ public:
 
 
     void updatePose() {
-        abs_pose = abs_poses.back();
+        abs_pose = abs_poses.back(); //abs_pose:当前处理laser对应的imu帧在map下的位姿
         for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx[keyframe_idx.size()-1]; ++i){
-            pose_cloud_frame->points[i-1].x = abs_poses[i][4];
+            pose_cloud_frame->points[i-1].x = abs_poses[i][4]; //TODO: 为何不是points[i] ?
             pose_cloud_frame->points[i-1].y = abs_poses[i][5];
             pose_cloud_frame->points[i-1].z = abs_poses[i][6];
 
@@ -1412,8 +1428,8 @@ public:
         int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
         vec_edge_res_cnt[idVec] = 0;
 
-        for (int i = 0; i < edge_lasts_ds[idx]->points.size(); ++i) {
-            pt_in_local = edge_lasts_ds[idx]->points[i];
+        for (int i = 0; i < edge_lasts_ds[idx]->points.size(); ++i) {//TODO: 应该为idx + 1 ?
+            pt_in_local = edge_lasts_ds[idx]->points[i]; //TODO: 应该为idx + 1 ?
 
             transformPoint(&pt_in_local, &pt_in_map, q, t);
             kd_tree_edge_local_map->nearestKSearch(pt_in_map, 5, pt_search_idx, pt_search_sq_dists);
@@ -1456,7 +1472,7 @@ public:
                     Eigen::Vector3d nu = (lp - ptA).cross(lp - ptB);
                     Eigen::Vector3d de = ptA - ptB;
 
-                    double dist = nu.norm() / de.norm();
+                    double dist = nu.norm() / de.norm(); //面积除以底 = 高
                     if(dist < 0.1) {
                         PointType pointA, pointB;
                         pointA.x = ptA.x();
@@ -1465,11 +1481,11 @@ public:
                         pointB.x = ptB.x();
                         pointB.y = ptB.y();
                         pointB.z = ptB.z();
-                        vec_edge_cur_pts[idVec]->push_back(pt_in_local);
+                        vec_edge_cur_pts[idVec]->push_back(pt_in_local);//source点，在自己laser帧下
                         vec_edge_match_j[idVec]->push_back(pointA);
                         vec_edge_match_l[idVec]->push_back(pointB);
 
-                        ++vec_edge_res_cnt[idVec];
+                        ++vec_edge_res_cnt[idVec]; //统计有效点的个数
                     }
 
                 }
@@ -1482,8 +1498,8 @@ public:
         int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
         vec_surf_res_cnt[idVec] = 0;
 
-        for (int i = 0; i < surf_lasts_ds[idx]->points.size(); ++i) {
-            pt_in_local = surf_lasts_ds[idx]->points[i];
+        for (int i = 0; i < surf_lasts_ds[idx]->points.size(); ++i) {//TODO: 应该为idx + 1 ?
+            pt_in_local = surf_lasts_ds[idx]->points[i]; //TODO: 应该为idx + 1 ?
 
             transformPoint(&pt_in_local, &pt_in_map, q, t);
             kd_tree_surf_local_map->nearestKSearch(pt_in_map, 5, pt_search_idx, pt_search_sq_dists);
@@ -1525,11 +1541,11 @@ public:
                         normal.z = weight * norm.z();
                         normal.intensity = weight * normInverse;
 
-                        vec_surf_cur_pts[idVec]->push_back(pt_in_local);
-                        vec_surf_normal[idVec]->push_back(normal);
+                        vec_surf_cur_pts[idVec]->push_back(pt_in_local); //source点，在对应laser帧下的点
+                        vec_surf_normal[idVec]->push_back(normal); //残差(点到平面的距离)
 
-                        ++vec_surf_res_cnt[idVec];
-                        vec_surf_scores[idVec].push_back(lidar_const*weight);
+                        ++vec_surf_res_cnt[idVec]; //统计有效点的个数
+                        vec_surf_scores[idVec].push_back(lidar_const*weight); //const param
                     }
                 }
             }
@@ -1671,7 +1687,6 @@ public:
         //保存Ps[], Rs[]位姿
 
         
-
         //optimize sliding window
         num_kf_sliding++;
         if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足, 每次都会执行
@@ -1960,6 +1975,7 @@ public:
             dQuat[numPara-1][2] = tmpQuat.y();
             dQuat[numPara-1][3] = tmpQuat.z();
             paraBetweenEachFrame.push_back(dQuat[numPara-1]);
+
 
             optimizeLocalGraph(paraBetweenEachFrame);
         }

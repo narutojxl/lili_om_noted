@@ -34,7 +34,8 @@ private:
     // pose representation: [quaternion: w, x, y, z | transition: x, y, z]
     double abs_pose[7];   //absolute pose from current frame to the first frame
     //laser odom的原点是：第一帧laser时刻的laser坐标系，求得的位姿是laser帧在odom下的位姿
-    //不同于后端，后端的原点map是：第一帧laser时刻的imu坐标系，求得的位姿是关键帧时刻的imu在map下的位姿
+    //不同于后端，后端的原点map是：第一帧imu坐标系，求得的位姿是关键帧时刻的imu在map下的位姿
+    
 
 
     double rel_pose[7];   //relative pose between two frames

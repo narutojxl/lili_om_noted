@@ -19,7 +19,7 @@ lidar_odometry:
   if_to_deskew: false  #已经在preprocessing环节去歪斜了(转换到当前帧start下)
 
 backend_fusion:
-  max_num_iter: 15
+  max_num_iter: 15   #滑窗优化时迭代的次数
   loop_closure_on: true
   local_map_width: 50
   lc_search_radius: 15
@@ -27,11 +27,11 @@ backend_fusion:
   lc_icp_thres: 0.2
   slide_window_width: 3
   imu_topic: "/imu/data"       # "/applanix/imu"  
-  lidar_const: 7.5
+  lidar_const: 7.5    #laser残差的权重值
   mapping_interval: 2
   lc_time_thres: 60.0
-  surf_dist_thres: 0.12
-  kd_max_radius: 1.0
+  surf_dist_thres: 0.12  #平面距离不超过该阈值时，这些点形成的平面才是一个有效的平面
+  kd_max_radius: 1.0  #laser下的点根据位姿的初值，转换到map，在map的kd tree中找最近的5个点，最远点与转换后的点的距离不能超过1.0
   save_pcd: false
 
 #extrinsic imu to lidar
