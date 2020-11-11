@@ -51,9 +51,10 @@ void ResidualBlockInfo::Evaluate() {
     //ImuFactor::Evaluate()
     //LidarPlaneNormFactor::Evaluate()
     //LidarEdgeFactor::Evaluate()
+    //MarginalizationFactor::Evaluate()
 
 
-    //marg位姿的imu预积分残差的loss function = nullptr, 其他的not nullptr
+    //marg位姿的imu预积分残差的loss function = nullptr, 上次滑窗marg的残差loss function = nullptr, 其他的not nullptr
     if (loss_function) {
         double residual_scaling_, alpha_sq_norm_;
 
@@ -147,10 +148,10 @@ int MarginalizationInfo::LocalSize(int size) const {
 
 void MarginalizationInfo::Marginalize() {
     int pos = 0;
-    for (auto &it : parameter_block_idx) { //<marg位姿自己的参数块的地址, 0>
+    for (auto &it : parameter_block_idx) { 
         it.second = pos;
         pos += LocalSize(parameter_block_size[it.first]);
-    }//parameter_block_idx: <marg位姿自己的参数块的地址, 地址偏移量>
+    }
     //tmpTrans[0]地址:      offset=0
     //tmpQuat[0]地址:       offset=3
     //tmpSpeedBias[0]地址:  offset=6
@@ -166,6 +167,7 @@ void MarginalizationInfo::Marginalize() {
     //计算窗口内非marg帧参数块的偏移量
 
     n = pos - m; //前m个是需要marg掉的, 剩下n个是需要保留的, pos: 滑窗内所有参数块维数之和
+    //n = 30 ? 
 
     Eigen::MatrixXd A(pos, pos);
     Eigen::VectorXd b(pos);
@@ -185,7 +187,7 @@ void MarginalizationInfo::Marginalize() {
         threadsstruct[i].A = Eigen::MatrixXd::Zero(pos, pos);
         threadsstruct[i].b = Eigen::VectorXd::Zero(pos);
         threadsstruct[i].parameter_block_size = parameter_block_size;  //<每个参数块的地址, 每个参数块的大小>
-        threadsstruct[i].parameter_block_idx = parameter_block_idx;    //<每个参数块的地址, 地址偏移量> 
+        threadsstruct[i].parameter_block_idx = parameter_block_idx;    //<每个参数块的地址, 在矩阵中的id> 
         int ret = pthread_create(&tids[i], NULL, ThreadsConstructA, (void *) &(threadsstruct[i]));
         if (ret != 0) {
             ROS_DEBUG("pthread_create error");
@@ -216,10 +218,21 @@ void MarginalizationInfo::Marginalize() {
     //舒尔补, 消去X_m，剩下Xn 
     //得到 A * Xn =  b，消去marg帧的所有参数块(维数: m)，得到窗口内剩余状态的normal equation
     //其中 A = J^T * J, A是一个实对称矩阵。 J = Σ每个残差项ri对X_n的雅克比
-    //其中 b = J^T * r, r = Σ每个残差项。
-    
+    //其中 b = J^T * r, r = Σ每个残差项。  r = (J^T).inv() * b
+    //marg掉滑窗内的第一个位姿, 会产生一个残差,下次优化时要把上次边缘化产生的残差考虑进来.
+
+    //FEJ:
+    //由于剩余状态Xn还在滑窗内,在下次迭代优化时会被继续优化.
+    //当引入新的观测后，这些Xn状态量是会发生变化的，此时就和边缘化时的Xn状态量不一样了，
+    //从而导致边缘化时产生的关于Xn雅可比和残差项都发生了变化,导致H矩阵的N(H)空间秩发生了变化,引入了错误的信息.
+    //在每次优化迭代时：
+    //对于状态Xn，残差对Xn的雅克比一直是边缘化时Xn的值带入到雅克比表达式中
+    //但是状态Xn每次都在更新，只是说Xn的线性化点是固定不变的。
+    //更新后的残差 r_new = r_old + J*dx, dx为Xn当前状态与边缘化时状态量的差.
+   
+
     //对marg后的H矩阵进行特征值分解:
-    //对A进行特征值分解 A = eigenvectors * eigenvalues.asDiagonal() * eigenvectors.transpose() = J^T * J
+    //对A进行特征值分解 A = J^T * J = eigenvectors * eigenvalues.asDiagonal() * eigenvectors.transpose() 
     //J = sqrt(eigenvalues.asDiagonal()) * eigenvectors.transpose()
 
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes2(A); //实对称矩阵特征值分解 A = V [\] V^T, V.inv() =V.trans() 
@@ -230,14 +243,11 @@ void MarginalizationInfo::Marginalize() {
     Eigen::VectorXd S_sqrt = S.cwiseSqrt();
     Eigen::VectorXd S_inv_sqrt = S_inv.cwiseSqrt();
     
-    // FEJ, 以后计算关于先验的误差和Jacobian都在边缘化的这个线性点展开
-    // 在每次优化迭代时：
-    // 对于状态Xn，残差对Xn的雅克比一直是边缘化时Xn的值带入到雅克比表达式中
-    // 但是状态Xn每次都在更新，只是说Xn的线性化点是固定不变的。
-
+    // FEJ, 以后计算关于先验的残差和Jacobian都在边缘化的这个线性点展开
     linearized_jacobians = S_sqrt.asDiagonal() * saes2.eigenvectors().transpose(); 
     //J = [sqrt(λ1) ... sqrt(λi) ... sqrt(λn)].diag() * V^T , J可逆
-
+    
+    //边缘化产生的残差r
     linearized_residuals = S_inv_sqrt.asDiagonal() * saes2.eigenvectors().transpose() * b;
      //r = [1/sqrt(λ1) ... 1/sqrt(λi) ... 1/sqrt(λn)].diag() * V^T * b
      //r = (J^T).inv() * b
@@ -251,17 +261,17 @@ std::vector<double *> MarginalizationInfo::GetParameterBlocks(std::unordered_map
     keep_block_idx.clear();
     keep_block_data.clear();
 
-    for (const auto &it : parameter_block_idx) {//<每个参数块的地址, 地址偏移量> 
+    for (const auto &it : parameter_block_idx) {//<每个参数块的地址, 在矩阵中的id> 
         if (it.second >= m) {//marg后剩余状态的维数
-            keep_block_size.push_back(parameter_block_size[it.first]);
-            keep_block_idx.push_back(parameter_block_idx[it.first]);
-            keep_block_data.push_back(parameter_block_data[it.first]);
-            keep_block_addr.push_back(addr_shift[it.first]);
+            keep_block_size.push_back(parameter_block_size[it.first]); //本次滑窗第二个,第三个位姿参数块的大小
+            keep_block_idx.push_back(parameter_block_idx[it.first]);   //本次滑窗第二个,第三个位姿参数块的偏移量
+            keep_block_data.push_back(parameter_block_data[it.first]); //本次滑窗第二个,第三个位姿参数块的raw data
+            keep_block_addr.push_back(addr_shift[it.first]); //raw指针分别指向本次滑窗中第一个位姿(被marg掉)参数块的raw data,第二个位姿参数块的raw data
         }
     }
     sum_block_size = std::accumulate(std::begin(keep_block_size), std::end(keep_block_size), 0); //not used 
 
-    return keep_block_addr;
+    return keep_block_addr; 
 }
 
 
@@ -272,7 +282,7 @@ std::vector<double *> MarginalizationInfo::GetParameterBlocks(std::unordered_map
 MarginalizationFactor::MarginalizationFactor(MarginalizationInfo *_marginalization_info) : marginalization_info(
                                                                                                _marginalization_info) {
     int cnt = 0;
-    for (auto it : marginalization_info->keep_block_size) {
+    for (auto it : marginalization_info->keep_block_size) { //上次滑窗第二个,第三个位姿参数块的大小
         mutable_parameter_block_sizes()->push_back(it);
         cnt += it;
     }
@@ -284,12 +294,16 @@ MarginalizationFactor::MarginalizationFactor(MarginalizationInfo *_marginalizati
 bool MarginalizationFactor::Evaluate(double const *const *parameters, double *residuals, double **jacobians) const {
     int n = marginalization_info->n;
     int m = marginalization_info->m;
-    Eigen::VectorXd dx(n);
-    for (int i = 0; i < static_cast<int>(marginalization_info->keep_block_size.size()); i++) {
+    Eigen::VectorXd dx(n); //dx表示当前的状态量和边缘化时的状态量之间的差值
+    for (int i = 0; i < static_cast<int>(marginalization_info->keep_block_size.size()); i++) { //上次滑窗第二个,第三个位姿参数块的大小
         int size = marginalization_info->keep_block_size[i];
         int idx = marginalization_info->keep_block_idx[i] - m;
-        Eigen::VectorXd x = Eigen::Map<const Eigen::VectorXd>(parameters[i], size);
-        Eigen::VectorXd x0 = Eigen::Map<const Eigen::VectorXd>(marginalization_info->keep_block_data[i], size);
+
+        Eigen::VectorXd x = Eigen::Map<const Eigen::VectorXd>(parameters[i], size);  //上次边缘化时被保留状态Xn在当前优化中的值
+
+        //keep_block_data: 上次滑窗第二个,第三个位姿参数块的raw data
+        Eigen::VectorXd x0 = Eigen::Map<const Eigen::VectorXd>(marginalization_info->keep_block_data[i], size); //边缘化时，被保留的状态量的值
+
         if (size != 4) {
             dx.segment(idx, size) = x - x0;
         }
@@ -297,7 +311,7 @@ bool MarginalizationFactor::Evaluate(double const *const *parameters, double *re
             dx.segment<3>(idx) = 2.0 * (Eigen::Quaterniond(x0(0), x0(1), x0(2), x0(3)).inverse()
                                         * Eigen::Quaterniond(x(0), x(1), x(2), x(3))).normalized().vec();
             if ((Eigen::Quaterniond(x0(0), x0(1), x0(2), x0(3)).inverse() * Eigen::Quaterniond(x(0), x(1), x(2), x(3))).w()
-                    < 0) {
+                    < 0) {//shortest quaternion
                 dx.segment<3>(idx) = -2.0 * (Eigen::Quaterniond(x0(0), x0(1), x0(2), x0(3)).inverse()
                                              * Eigen::Quaterniond(x(0), x(1), x(2), x(3))).normalized().vec();
             }
@@ -306,10 +320,12 @@ bool MarginalizationFactor::Evaluate(double const *const *parameters, double *re
 
     Eigen::Map<Eigen::VectorXd>(residuals, n) =
             marginalization_info->linearized_residuals + marginalization_info->linearized_jacobians * dx;
+    //更新边缘化留下的残差
+
 
     if (jacobians) {
 
-        for (int i = 0; i < static_cast<int>(marginalization_info->keep_block_size.size()); i++) {
+        for (int i = 0; i < static_cast<int>(marginalization_info->keep_block_size.size()); i++) { //上次滑窗第二个,第三个位姿参数块的大小
             if (jacobians[i]) {
 
                 int size = marginalization_info->keep_block_size[i], local_size = marginalization_info->LocalSize(size);

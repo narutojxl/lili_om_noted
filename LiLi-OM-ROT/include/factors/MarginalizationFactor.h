@@ -28,6 +28,7 @@ struct ResidualBlockInfo {
     std::vector<int> drop_set;
     
     //注意: 窗口内的位姿是imu在map下的位姿,不是laser在map下的位姿
+    //如下种类的ResidualBlockInfo, 被添加到本次marg对象
 
     //marg位姿的imu预积分残差, P V Q Ba Bg, 15*1 , 产生一个ResidualBlockInfo对象
     //parameter_blocks: 6个,  tmpTrans[0], tmpQuat[0], tmpSpeedBias[0], tmpTrans[1], tmpQuat[1], tmpSpeedBias[1]
@@ -42,6 +43,11 @@ struct ResidualBlockInfo {
     //窗口内其他帧的laser残差,  0 < i <= 滑窗size - 1, 每个有效point产生一个ResidualBlockInfo对象
     //parameter_blocks: 2个,  tmpTrans[i], tmpQuat[i]
     //drop_set:         空
+
+
+    //
+    //parameter_blocks: last_marginalization_parameter_blocks
+    //drop_set:          vector<int>{3, 4, 5} ?
 
 
 
@@ -74,7 +80,7 @@ public:
     int m, n;
     std::unordered_map<long, int> parameter_block_size; //global size,  <每个参数块的地址, 每个参数块的大小>
     int sum_block_size;
-    std::unordered_map<long, int> parameter_block_idx; //local size,   <每个参数块的地址, 地址偏移量> 
+    std::unordered_map<long, int> parameter_block_idx; //local size,   <每个参数块的地址, 在矩阵中的id>  
     std::unordered_map<long, double *> parameter_block_data;//         <每个参数块的地址, 指向每个参数块的raw指针>
 
 
@@ -82,8 +88,8 @@ public:
     std::vector<int> keep_block_idx;  //local size
     std::vector<double *> keep_block_data;
 
-    Eigen::MatrixXd linearized_jacobians;
-    Eigen::VectorXd linearized_residuals;
+    Eigen::MatrixXd linearized_jacobians; //边缘化得到的雅可比矩阵
+    Eigen::VectorXd linearized_residuals; //边缘化得到的残差
     const double eps = 1e-8;
 };
 
@@ -104,7 +110,7 @@ struct ThreadsStruct {
     Eigen::MatrixXd A;
     Eigen::VectorXd b;
     std::unordered_map<long, int> parameter_block_size; //global size   <每个参数块的地址, 每个参数块的大小>
-    std::unordered_map<long, int> parameter_block_idx; //local size     <每个参数块的地址, 地址偏移量> 
+    std::unordered_map<long, int> parameter_block_idx; //local size     <每个参数块的地址, 在矩阵中的id> 
 };
 
 #endif //MARGINALIZATIONFACTOR_H_

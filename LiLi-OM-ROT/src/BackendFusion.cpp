@@ -127,7 +127,7 @@ private:
 
 
     // Form of the transformation
-    vector<double> abs_pose; //当前处理laser对应的imu帧在map下的位姿
+    vector<double> abs_pose; //当前key laser帧对应的imu帧在map下的位姿
     vector<double> last_pose;
 
     mutex mutual_exclusion;
@@ -162,9 +162,9 @@ private:
 
     //index of keyframe
     vector<int> keyframe_idx; //从0开始
-    vector<int> keyframe_id_in_frame; //从0开始
+    vector<int> keyframe_id_in_frame; //对应关键帧在odom_buf[]中index
 
-    vector<vector<double>> abs_poses;
+    vector<vector<double>> abs_poses; //保存所有abs_pose
 
     int num_kf_sliding;
 
@@ -725,10 +725,10 @@ public:
             Vs.push_back(Vs.back());
         }
         
-        Eigen::Vector3d un_acc_0 = Rs.back() * (acc_0 - Bas.back()) - g;
+        Eigen::Vector3d un_acc_0 = Rs.back() * (acc_0 - Bas.back()) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
         Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs.back();
         Rs.back() *= deltaQ(un_gyr * dt).toRotationMatrix();
-        Eigen::Vector3d un_acc_1 = Rs.back() * (linear_acceleration - Bas.back()) - g;
+        Eigen::Vector3d un_acc_1 = Rs.back() * (linear_acceleration - Bas.back()) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
         Eigen::Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
         Ps.back() += dt * Vs.back() + 0.5 * dt * dt * un_acc;
         Vs.back() += dt * un_acc;
@@ -747,12 +747,15 @@ public:
 
 
         int windowSize = keyframe_idx[keyframe_idx.size()-1] - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
-        //windowSize == 3
+        //windowSize = 3
 
         kd_tree_surf_local_map->setInputCloud(surf_local_map_ds);
         kd_tree_edge_local_map->setInputCloud(edge_local_map_ds);
 
-
+        //1.求解当前滑窗内每帧的位姿
+        //a.添加上次边缘化留下的残差
+        //b.添加滑窗内每相邻两帧位姿间的imu预积分残差
+        //c.添加每帧位姿时刻对应的laser points在local map中找对应点,产生的残差
         for (int iterCount = 0; iterCount < 1; ++iterCount) {
             ceres::LossFunction *lossFunction = new ceres::CauchyLoss(1.0);
             ceres::LocalParameterization *quatParameterization = new ceres::QuaternionParameterization();
@@ -791,20 +794,22 @@ public:
                 problem.AddParameterBlock(tmpSpeedBias[i-keyframe_idx[keyframe_idx.size()-slide_window_width]], 9);
             }
 
-            abs_pose = abs_poses.back(); //abs_pose: 当前帧laser在map下位姿
+            abs_pose = abs_poses.back(); //abs_pose: 当前laser帧时刻的imu在map下位姿
 
             if(true) {
-                if (last_marginalization_info) {
+                if (last_marginalization_info) {//上次marg后产生的信息
                     // construct new marginlization_factor
                     MarginalizationFactor *marginalization_factor = new MarginalizationFactor(last_marginalization_info);
                     problem.AddResidualBlock(marginalization_factor, NULL,
                                              last_marginalization_parameter_blocks);
+                                           //存储的raw指针分别指向上次滑窗中第一个位姿(被marg掉)参数块的raw data,第二个位姿参数块的raw data
+                 //当前滑窗中的第一, 第二个位姿由于也在上次滑窗中存在, 优化过程中不断更新上次边缘化留下的残差 
                 }
             }
 
             if(!marg) {//闭环correctPoses()后才为false, 否则一直为true
                 //add prior factor
-                for(int i = 0; i < slide_window_width - 1; i++) { //TODO:为何-1
+                for(int i = 0; i < slide_window_width - 1; i++) { //为何-1
 
                     vector<double> tmps;
                     for(int j = 0; j < 9; j++) {
@@ -917,30 +922,47 @@ public:
                 }
             }
         }
+        
+        
+        //2. 边缘化当前滑窗内第一帧位姿,产生本次marg残差和雅克比
+        //a. 由上次滑窗marg 残差和雅克比, 产生当前滑窗marg残差和雅克比
+        //b. 本次滑窗marg帧与第二个位姿的imu预积分残差
+        //c. 本次滑窗每帧laser points与local map对应点之间的残差
+
+        //TODO: 在本次滑窗marg时, tmpTrans tmpQuat  tmpSpeedBias 应该保持不变, 对吗?
+
 
         MarginalizationInfo *marginalization_info = new MarginalizationInfo(); //marg_info赋值
 
-        if (last_marginalization_info) {//第一次执行滑窗时为false, 直到后面才赋值
-            vector<int> drop_set;
+        if (last_marginalization_info) { //上次marg后产生的信息
+            vector<int> drop_set; //存储的raw指针分别指向上次滑窗中第一个位姿(被marg掉)参数块的raw data,第二个位姿参数块的raw data
             for (int i = 0; i < static_cast<int>(last_marginalization_parameter_blocks.size()); i++) {
                 if (last_marginalization_parameter_blocks[i] == tmpTrans[0] ||
                         last_marginalization_parameter_blocks[i] == tmpQuat[0] ||
                         last_marginalization_parameter_blocks[i] == tmpSpeedBias[0])
                     drop_set.push_back(i);
             }
-            // construct new marginlization_factor
 
+            //TODO drop_set: vector<int>{3, 4, 5} ?
+            std::printf("drop_set:\n");
+            for(const auto& it : drop_set){
+                std::printf("%d, ", *it);
+            }
+            std::cout<<"\n";
+
+            // construct new marginlization_factor
             MarginalizationFactor *marginalization_factor = new MarginalizationFactor(last_marginalization_info);
 
             ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(marginalization_factor, NULL,
                                                                            last_marginalization_parameter_blocks,
                                                                            drop_set);
 
-            marginalization_info->AddResidualBlockInfo(residual_block_info);
+            marginalization_info->AddResidualBlockInfo(residual_block_info); //上次滑窗后产生的约束加入到本次marg对象
         }
 
 
-        if(!marg) {//闭环correctPoses()后才为false, 否则一直为true
+        if(!marg) {//闭环后才为false, 否则一直为true
+
             //add prior factor
             for(int i = 0; i < slide_window_width - 1; i++) {
 
@@ -974,7 +996,7 @@ public:
                 marginalization_info->AddResidualBlockInfo(residual_block_info1);
             }
 
-            marg = true;
+            marg = true; //只在此处置true
         }
     
 
@@ -1080,14 +1102,15 @@ public:
 
         marginalization_info->Marginalize(); //marg滑窗的第一个位姿
         
-        std::unordered_map<long, double *> addr_shift; //<每个参数块的地址, 指向的raw data>  
-        for (int i = 1; i < windowSize; ++i) { //TODO: 地址指向的data ?
-            addr_shift[reinterpret_cast<long>(tmpTrans[i])] = tmpTrans[i-1];
+        std::unordered_map<long, double *> addr_shift; //<滑窗第二个位姿参数块地址, 第一个位姿参数块的raw data>
+        for (int i = 1; i < windowSize; ++i) {         //<滑窗第三个位姿参数块地址, 第二个位姿参数块的raw data>
+            addr_shift[reinterpret_cast<long>(tmpTrans[i])] = tmpTrans[i-1]; //TODO: 为什么不是 tmpTrans[i] = tmpTrans[i]
             addr_shift[reinterpret_cast<long>(tmpQuat[i])] = tmpQuat[i-1];
             addr_shift[reinterpret_cast<long>(tmpSpeedBias[i])] = tmpSpeedBias[i-1];
         }
 
         vector<double *> parameter_blocks = marginalization_info->GetParameterBlocks(addr_shift);
+        //存储的raw指针分别指向本次滑窗中第一个位姿(被marg掉)参数块data, 第二个位姿参数块data
 
 
         if (last_marginalization_info) {
@@ -1097,7 +1120,7 @@ public:
         last_marginalization_parameter_blocks = parameter_blocks;
 
 
-        //double to eigen
+        //double to eigen 
         for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx.back(); ++i){
 
             double dp0 = Ps[i][0] - tmpTrans[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][0];
@@ -1205,7 +1228,7 @@ public:
 
 
     void updatePose() {
-        abs_pose = abs_poses.back(); //abs_pose:当前处理laser对应的imu帧在map下的位姿
+        abs_pose = abs_poses.back(); //abs_pose: 优化结束后当前处理laser对应的imu帧在map下的位姿
         for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx[keyframe_idx.size()-1]; ++i){
             pose_cloud_frame->points[i-1].x = abs_poses[i][4]; //TODO: 为何不是points[i] ?
             pose_cloud_frame->points[i-1].y = abs_poses[i][5];
@@ -1302,7 +1325,7 @@ public:
 
     void buildLocalMapWithLandMark() {
         // Initialization
-        if (pose_cloud_frame->points.size() < 1) {//第1帧laser
+        if (pose_cloud_frame->points.size() < 1) {//第1key帧laser
             PointPoseInfo Tbl;
             Tbl.qw = q_bl.w(); //imu to laser
             Tbl.qx = q_bl.x();
@@ -1316,9 +1339,6 @@ public:
             *surf_local_map += *transformCloud(surf_last, &Tbl);
             return;
         }
-     
-        // std::printf("laser num = %d, pose_cloud_frame = %d,  recent_surf_keyframes = %d\n", laser_num, pose_cloud_frame->points.size(), recent_surf_keyframes.size());
-        //此时 recent_surf_keyframes.size = pose_cloud_frame - 1;
 
         if (recent_surf_keyframes.size() < local_map_width) {//50
             recent_edge_keyframes.clear(); //清空
@@ -1554,7 +1574,10 @@ public:
 
     void saveKeyFramesAndFactors() {
         abs_poses.push_back(abs_pose); //除了构造函数，只在此处push
-        keyframe_id_in_frame.push_back(each_odom_buf.size()-1); //只在此处push, index从0开始
+        keyframe_id_in_frame.push_back(each_odom_buf.size()-1); //只在此处push, 第一个为0
+        //由于后端执行一次循环远慢于odom回调函数, 每次push的是当前处理的laser帧在odom_buff[]中的index
+        //当前处理的laser帧就是一个keyframe
+
 
         pcl::PointCloud<PointType>::Ptr cornerEachFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr surfEachFrame(new pcl::PointCloud<PointType>());
@@ -1567,6 +1590,12 @@ public:
 
         //record index of kayframe on imu preintegration poses
         keyframe_idx.push_back(abs_poses.size()-1); //只在此处push, index从0开始
+        
+
+        //如果当前laser帧index = m, m>=0
+        //用滑窗中的最后一个位姿到第m帧laser的imu meas做预积分
+        //计算pre_integrations[m]
+        //Rs[m]   Ps[m]   Vs[m]  Bas[m]   Bgs[m]
 
         double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
 
@@ -1608,7 +1637,7 @@ public:
                 break;
         }
 
-        imu_idx_in_kf.push_back(i - 1);
+        imu_idx_in_kf.push_back(i - 1); //处理的每帧laser时刻,对应的imu在imu_buf[]中的index; 处理一帧laser push一个.
 
         if(i < imu_buf.size()) {//说明imu_buf[i]->header.stamp.toSec() >= timeodom_cur
             double dt1 = timeodom_cur - cur_time_imu;
@@ -1666,9 +1695,9 @@ public:
         latestPose.x = Ps.back().x();
         latestPose.y = Ps.back().y();
         latestPose.z = Ps.back().z();
-        latestPose.intensity = pose_cloud_frame->points.size(); //index从0开始
-        std::printf("pose_cloud index = %d\n", latestPose.intensity);
-        pose_cloud_frame->push_back(latestPose); //只在此处push
+        latestPose.intensity = pose_cloud_frame->points.size(); 
+        // std::printf("pose_cloud_index = %f\n", latestPose.intensity);
+        pose_cloud_frame->push_back(latestPose); //只在此处push, 点的intensity从0开始
         //保存：Ps[]位姿
 
         latestPoseInfo.x = Ps.back().x();
@@ -1679,23 +1708,23 @@ public:
         latestPoseInfo.qx = qs_last.x();
         latestPoseInfo.qy = qs_last.y();
         latestPoseInfo.qz = qs_last.z();
-        latestPoseInfo.idx = pose_cloud_frame->points.size(); //index从1开始？
-        std::printf("pose_info_cloud_index = %d\n", latestPoseInfo.idx);
+        latestPoseInfo.idx = pose_cloud_frame->points.size();
+        // std::printf("pose_info_cloud_index = %d\n", latestPoseInfo.idx);
         latestPoseInfo.time = time_new_odom; //laser odom发出的每一odometry时刻
 
-        pose_info_cloud_frame->push_back(latestPoseInfo); //只在此处push
+        pose_info_cloud_frame->push_back(latestPoseInfo); //只在此处push,点的idx从1开始
         //保存Ps[], Rs[]位姿
 
         
         //optimize sliding window
         num_kf_sliding++;
-        if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足, 每次都会执行
+        if(num_kf_sliding >= 1 || !first_opt) {//条件永远满足, 每帧laser都会执行
             optimizeSlidingWindowWithLandMark();
             num_kf_sliding = 0;
         }
 
-        if (pose_cloud_frame->points.size() == slide_window_width) {
-            pose_each_frame->push_back(pose_cloud_frame->points[0]);
+        if (pose_cloud_frame->points.size() == slide_window_width) {//第一次执行滑窗
+            pose_each_frame->push_back(pose_cloud_frame->points[0]); //第1处push
             pose_info_each_frame->push_back(pose_info_cloud_frame->points[0]);
         } else if(pose_cloud_frame->points.size() > slide_window_width) {
             int ii = imu_idx_in_kf[imu_idx_in_kf.size() - slide_window_width - 1];
@@ -1705,7 +1734,9 @@ public:
             Eigen::Matrix3d Rtmp = Rs[Ps.size() - slide_window_width];
             Eigen::Vector3d Batmp = Eigen::Vector3d::Zero();
             Eigen::Vector3d Bgtmp = Eigen::Vector3d::Zero();
-
+            
+            
+            //给pose_info_each_frame[] push内容 
             for(int i = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1] + 1;
                 i < keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width]; i++) {
 
@@ -1748,10 +1779,10 @@ public:
                     Eigen::Vector3d a1(dx, dy, dz);
                     Eigen::Vector3d gy1(rx, ry, rz);
 
-                    Eigen::Vector3d un_acc_0 = Rtmp * (a0 - Batmp) - g;
+                    Eigen::Vector3d un_acc_0 = Rtmp * (a0 - Batmp) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
                     Eigen::Vector3d un_gyr = 0.5 * (gy0 + gy1) - Bgtmp;
                     Rtmp *= deltaQ(un_gyr * dt).toRotationMatrix();
-                    Eigen::Vector3d un_acc_1 = Rtmp * (a1 - Batmp) - g;
+                    Eigen::Vector3d un_acc_1 = Rtmp * (a1 - Batmp) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
                     Eigen::Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
                     Ptmp += dt * Vtmp + 0.5 * dt * dt * un_acc;
                     Vtmp += dt * un_acc;
@@ -1761,6 +1792,7 @@ public:
 
                     ii++;
                 }
+                //直到imu_buf[ii]时间戳 >= each_odom_buf[i]
 
                 dt1 = each_odom_buf[i]->header.stamp.toSec() - imu_buf[ii-1]->header.stamp.toSec();
                 dt2 = imu_buf[ii]->header.stamp.toSec() - each_odom_buf[i]->header.stamp.toSec();
@@ -1785,10 +1817,10 @@ public:
                 Eigen::Vector3d a1(dx, dy, dz);
                 Eigen::Vector3d gy1(rx, ry, rz);
 
-                Eigen::Vector3d un_acc_0 = Rtmp * (a0 - Batmp) - g;
+                Eigen::Vector3d un_acc_0 = Rtmp * (a0 - Batmp) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
                 Eigen::Vector3d un_gyr = 0.5 * (gy0 + gy1) - Bgtmp;
                 Rtmp *= deltaQ(un_gyr * dt1).toRotationMatrix();
-                Eigen::Vector3d un_acc_1 = Rtmp * (a1 - Batmp) - g;
+                Eigen::Vector3d un_acc_1 = Rtmp * (a1 - Batmp) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
                 Eigen::Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
                 Ptmp += dt1 * Vtmp + 0.5 * dt1 * dt1 * un_acc;
                 Vtmp += dt1 * un_acc;
@@ -1802,7 +1834,7 @@ public:
                 latestPose.x = Ptmp.x();
                 latestPose.y = Ptmp.y();
                 latestPose.z = Ptmp.z();
-                pose_each_frame->push_back(latestPose);
+                pose_each_frame->push_back(latestPose); //第2处push
 
                 latestPoseInfo.x = Ptmp.x();
                 latestPoseInfo.y = Ptmp.y();
@@ -1813,10 +1845,10 @@ public:
                 latestPoseInfo.qz = qqq.z();
                 latestPoseInfo.time = each_odom_buf[i]->header.stamp.toSec();
                 pose_info_each_frame->push_back(latestPoseInfo);
-            }
+            }//end for
 
-
-            pose_each_frame->push_back(pose_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]);
+            //最后一处push
+            pose_each_frame->push_back(pose_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]); 
             pose_info_each_frame->push_back(pose_info_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]);
             int j = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width];
 
@@ -2180,7 +2212,7 @@ public:
             select_pose.z = last_pose[6];
 
             loop_closed = false;
-            marg = false;
+            marg = false; //只在此处置false
         }
     }
 
@@ -2547,7 +2579,7 @@ public:
             laser_num++;
 
             Timer t_map("BackendFusion");
-            buildLocalMapWithLandMark();
+            buildLocalMapWithLandMark(); //建立edge_local_map, surf_local_map
             downSampleCloud();  //local map降采样，当前帧压入队列
             saveKeyFramesAndFactors();
             publishOdometry();
@@ -2556,7 +2588,7 @@ public:
             runtime += t_map.toc();
             //cout<<"BackendFusion average run time: "<<runtime / each_odom_buf.size()<<endl;
 
-            std::printf("laser index =%d done!\n\n", laser_num);
+            std::printf("laser_index = %d done!\n\n", laser_num);
         }
     }
 };

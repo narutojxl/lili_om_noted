@@ -102,7 +102,8 @@ public:
                              Quaterniond &result_delta_q, Vector3d &result_delta_v,
                              Vector3d &result_linearized_ba, Vector3d &result_linearized_bg,
                              bool update_jacobian) {
-
+        //copyed from liom.
+        //NOTE: the un_acc here is different from the un_acc in the BackendFusion
         Vector3d un_acc_0 = delta_q * (acc0 - linearized_ba);
         Vector3d un_gyr = 0.5 * (gyr0 + gyr1) - linearized_bg;
         result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * dt / 2, un_gyr(1) * dt / 2, un_gyr(2) * dt / 2);
