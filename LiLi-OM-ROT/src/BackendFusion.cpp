@@ -161,10 +161,10 @@ private:
     int slide_window_width;
 
     //index of keyframe
-    vector<int> keyframe_idx; //从0开始
+    vector<int> keyframe_idx; //从1开始
     vector<int> keyframe_id_in_frame; //对应关键帧在odom_buf[]中index
 
-    vector<vector<double>> abs_poses; //保存所有abs_pose
+    vector<vector<double>> abs_poses; //除了保存所有abs_pose, 还包含了原点map
 
     int num_kf_sliding;
 
@@ -259,6 +259,31 @@ public:
     }
 
     ~BackendFusion() {}
+
+
+    void printWindow(){
+        std::printf("tmpQuat\n");
+        for(int i = 0; i < slide_window_width; i++){
+            std::cout<<tmpQuat[i][0]<<" "<<tmpQuat[i][1]<<" "<<tmpQuat[i][2]<<" "<<tmpQuat[i][3]<<"\n";
+        }
+        std::printf("tmpQuat done\n\n");
+
+        std::printf("tmpTrans\n");
+        for(int i = 0; i < slide_window_width; i++){
+            std::cout<<tmpTrans[i][0]<<" "<<tmpTrans[i][1]<<" "<<tmpTrans[i][2]<<"\n";
+        }
+        std::printf("tmpTrans done\n\n");
+
+        std::printf("tmpSpeedBias\n");
+        for(int i = 0; i < slide_window_width; i++){
+            std::cout<<tmpSpeedBias[i][0]<<" "<<tmpSpeedBias[i][1]<<" "<<tmpSpeedBias[i][2]<<" "
+                     <<tmpSpeedBias[i][3]<<" "<<tmpSpeedBias[i][4]<<" "<<tmpSpeedBias[i][5]<<" "
+                     <<tmpSpeedBias[i][6]<<" "<<tmpSpeedBias[i][7]<<" "<<tmpSpeedBias[i][8]<<"\n";
+                  
+        }
+        std::printf("tmpSpeedBias done\n\n");
+    }
+
 
     void allocateMemory() {
         tmpQuat = new double *[slide_window_width]; //3
@@ -495,7 +520,7 @@ public:
             last_pose.push_back(0);
             tmpOdom.push_back(0);
         }
-        abs_poses.push_back(tmpOdom);
+        abs_poses.push_back(tmpOdom); //push map原点
 
         abs_pose = tmpOdom;
 
@@ -711,12 +736,10 @@ public:
     }
 
     void processIMU(double dt, const Eigen::Vector3d &linear_acceleration, const Eigen::Vector3d &angular_velocity) {
-        //第1帧laser时：1 < 1，不满足; 
-        //包括第2帧以后的laser时：
-        //先把前一个区间imu预积分的结果push保存，对当前的区间构造一个新的Preintegration对象
-        //然后对当前区间的imu meas逐个进行预积分。
+        //处理第1key帧laser时：
+        //pre_integrations.size() = 1, abs_poses.size()= 2, Rs.size() = 1
         if(pre_integrations.size() < abs_poses.size()) {
-            pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas.back(), Bgs.back())); //除了构造函数push一次，只在此处push
+            pre_integrations.push_back(new Preintegration(acc_0, gyr_0, Bas.back(), Bgs.back())); //除了在第一帧imu时push一次，只在此处push
             pre_integrations.back()->g_vec_ = -g; //g_vec_= [0, 0, -9.8]
             Bas.push_back(Bas.back()); //除了构造函数push一次，只在此处push
             Bgs.push_back(Bgs.back());
@@ -724,7 +747,11 @@ public:
             Ps.push_back(Ps.back());
             Vs.push_back(Vs.back());
         }
-        
+        //此时处理第1key帧laser时：
+        //pre_integrations.size() = 2, abs_poses.size()= 2, Rs.size() = 2
+        //即第1帧key laser前的imu预积分存放在了pre_integrations[1]
+        //Ps[1], Rs[1], Vs[1], Bas[1], Bgs[1]: 保存的是第1key帧laser的位姿
+
         Eigen::Vector3d un_acc_0 = Rs.back() * (acc_0 - Bas.back()) - g; //全局下的加速度, 和liom一样; //TODO: imu预积分中没有减去g
         Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs.back();
         Rs.back() *= deltaQ(un_gyr * dt).toRotationMatrix();
@@ -760,6 +787,12 @@ public:
             ceres::LossFunction *lossFunction = new ceres::CauchyLoss(1.0);
             ceres::LocalParameterization *quatParameterization = new ceres::QuaternionParameterization();
             ceres::Problem problem;
+ 
+            //[keyframe_idx[keyframe_idx.size()-slide_window_width],  keyframe_idx.back()]取值
+            //第1次关键帧: [1 2 3]
+            //第2次关键帧: [2 3 4]
+            //第3次关键帧: [3 4 5]
+            // ...
 
             //eigen to double
             //把滑窗内每个对应位姿的P V Q Ba Bg置入tmpQuat，tmpTrans，tmpSpeedBias，abs_poses
@@ -837,8 +870,15 @@ public:
                         tmpSpeedBias[idx+1-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
             }
             
+
+            // std::cout<<"enter laser residual\n";
             //滑窗内每帧imu对应的laser points产生的laser残差
             for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx <= keyframe_idx.back(); idx++) {
+                // std::printf("idx = %d, idx_max = %d, tmp_index = %d\n", 
+                //              keyframe_idx[keyframe_idx.size()-slide_window_width], 
+                //              keyframe_idx.back(), 
+                //              idx-keyframe_idx[keyframe_idx.size()-slide_window_width]);
+                //tmp_index = 0 1 2                                     
                 Eigen::Quaterniond Q2 = Eigen::Quaterniond(tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][0],
                         tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][1],
                         tmpQuat[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]][2],
@@ -929,8 +969,8 @@ public:
         //b. 本次滑窗marg帧与第二个位姿的imu预积分残差
         //c. 本次滑窗每帧laser points与local map对应点之间的残差
 
-        //TODO: 在本次滑窗marg时, tmpTrans tmpQuat  tmpSpeedBias 应该保持不变, 对吗?
-
+        // 在本次滑窗marg时, tmpTrans  tmpQuat  tmpSpeedBias保持不变, 只是在计算本次的marg对象,给下次滑窗用
+        // printWindow();
 
         MarginalizationInfo *marginalization_info = new MarginalizationInfo(); //marg_info赋值
 
@@ -943,12 +983,12 @@ public:
                     drop_set.push_back(i);
             }
 
-            //TODO drop_set: vector<int>{3, 4, 5} ?
-            std::printf("drop_set:\n");
-            for(const auto& it : drop_set){
-                std::printf("%d, ", *it);
-            }
-            std::cout<<"\n";
+            //TODO drop_set: <0, 2, 4>;  <0, 1, 2>; <0, 1, 4>, <0, 2, 3>;  <0, 1, 4>每次运行不固定
+            // std::printf("drop_set: ");
+            // for(const auto& it : drop_set){
+            //     std::printf("%d, ", it);
+            // }
+            // std::cout<<"\n";
 
             // construct new marginlization_factor
             MarginalizationFactor *marginalization_factor = new MarginalizationFactor(last_marginalization_info);
@@ -1098,7 +1138,7 @@ public:
             vec_surf_scores[idVec].clear();
         }
 
-        marginalization_info->PreMarginalize(); //对marg对象的所有ResidualBlockInfo计算每个残差项，以及残差对优化变量的雅克比
+        marginalization_info->PreMarginalize(); //对marg对象的所有ResidualBlockInfo, 计算每个残差项，以及残差对优化变量的雅克比
 
         marginalization_info->Marginalize(); //marg滑窗的第一个位姿
         
@@ -1112,13 +1152,14 @@ public:
         vector<double *> parameter_blocks = marginalization_info->GetParameterBlocks(addr_shift);
         //存储的raw指针分别指向本次滑窗中第一个位姿(被marg掉)参数块data, 第二个位姿参数块data
 
-
         if (last_marginalization_info) {
             delete last_marginalization_info;
         }
         last_marginalization_info = marginalization_info; 
         last_marginalization_parameter_blocks = parameter_blocks;
+       
 
+        // printWindow();
 
         //double to eigen 
         for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx.back(); ++i){
@@ -1145,8 +1186,7 @@ public:
                     tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][2],
                     tmpQuat[i-keyframe_idx[keyframe_idx.size()-slide_window_width]][3]).normalized().inverse() *
                     Eigen::Quaterniond(Rs[i]); 
-            double qnorm = dq.vec().norm();
-            //本次优化前后, 滑窗内每个位姿的变化量
+            double qnorm = dq.vec().norm(); //本次优化前后, 滑窗内每个位姿的变化量
 
             //用优化后的结果赋值Ps[i], Rs[i], Vs[i], Bas[i], Bgs[i]
             //用优化后的结果赋值abs_poses[i], para_speed_bias[i]
@@ -1230,7 +1270,7 @@ public:
     void updatePose() {
         abs_pose = abs_poses.back(); //abs_pose: 优化结束后当前处理laser对应的imu帧在map下的位姿
         for (int i = keyframe_idx[keyframe_idx.size()-slide_window_width]; i <= keyframe_idx[keyframe_idx.size()-1]; ++i){
-            pose_cloud_frame->points[i-1].x = abs_poses[i][4]; //TODO: 为何不是points[i] ?
+            pose_cloud_frame->points[i-1].x = abs_poses[i][4];
             pose_cloud_frame->points[i-1].y = abs_poses[i][5];
             pose_cloud_frame->points[i-1].z = abs_poses[i][6];
 
@@ -1433,14 +1473,16 @@ public:
         ds_filter_surf.filter(*surf_last_ds);
         pcl::PointCloud<PointType>::Ptr surf(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*surf_last_ds, *surf);
-        surf_lasts_ds.push_back(surf);
-
+        surf_lasts_ds.push_back(surf); //从第一个关键帧开始存起
+        // std::printf("surf_lasts_ds.size()= %d \n", surf_lasts_ds.size());
+        
         edge_last_ds->clear();
         ds_filter_edge.setInputCloud(edge_last); //curr less sharp points
         ds_filter_edge.filter(*edge_last_ds);
         pcl::PointCloud<PointType>::Ptr corner(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*edge_last_ds, *corner);
         edge_lasts_ds.push_back(corner);
+        // std::printf("edge_lasts_ds.size()= %d \n", edge_lasts_ds.size());
     }
 
 
@@ -1448,8 +1490,8 @@ public:
         int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
         vec_edge_res_cnt[idVec] = 0;
 
-        for (int i = 0; i < edge_lasts_ds[idx]->points.size(); ++i) {//TODO: 应该为idx + 1 ?
-            pt_in_local = edge_lasts_ds[idx]->points[i]; //TODO: 应该为idx + 1 ?
+        for (int i = 0; i < edge_lasts_ds[idx]->points.size(); ++i) {
+            pt_in_local = edge_lasts_ds[idx]->points[i];
 
             transformPoint(&pt_in_local, &pt_in_map, q, t);
             kd_tree_edge_local_map->nearestKSearch(pt_in_map, 5, pt_search_idx, pt_search_sq_dists);
@@ -1518,8 +1560,8 @@ public:
         int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width] + 1;
         vec_surf_res_cnt[idVec] = 0;
 
-        for (int i = 0; i < surf_lasts_ds[idx]->points.size(); ++i) {//TODO: 应该为idx + 1 ?
-            pt_in_local = surf_lasts_ds[idx]->points[i]; //TODO: 应该为idx + 1 ?
+        for (int i = 0; i < surf_lasts_ds[idx]->points.size(); ++i) {
+            pt_in_local = surf_lasts_ds[idx]->points[i];
 
             transformPoint(&pt_in_local, &pt_in_map, q, t);
             kd_tree_surf_local_map->nearestKSearch(pt_in_map, 5, pt_search_idx, pt_search_sq_dists);
@@ -1573,11 +1615,10 @@ public:
     }
 
     void saveKeyFramesAndFactors() {
-        abs_poses.push_back(abs_pose); //除了构造函数，只在此处push
-        keyframe_id_in_frame.push_back(each_odom_buf.size()-1); //只在此处push, 第一个为0
-        //由于后端执行一次循环远慢于odom回调函数, 每次push的是当前处理的laser帧在odom_buff[]中的index
+        abs_poses.push_back(abs_pose); //除了构造函数，只在此处push; 由于在处理第一个keyframe前,已经push了原点map
+        keyframe_id_in_frame.push_back(each_odom_buf.size()-1); //只在此处push, 第一个元素为0, 后面的元素不确定
+        //原因: 由于后端执行一次循环远慢于odom回调函数, 每次push的是当前处理的laser帧在odom_buff[]中的index
         //当前处理的laser帧就是一个keyframe
-
 
         pcl::PointCloud<PointType>::Ptr cornerEachFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr surfEachFrame(new pcl::PointCloud<PointType>());
@@ -1589,13 +1630,12 @@ public:
         surf_frames.push_back(surfEachFrame);   //只在此处push
 
         //record index of kayframe on imu preintegration poses
-        keyframe_idx.push_back(abs_poses.size()-1); //只在此处push, index从0开始
-        
+        keyframe_idx.push_back(abs_poses.size()-1); //只在此处push, index从1开始
 
-        //如果当前laser帧index = m, m>=0
+        //如果当前key laser帧index=m, m>=1
         //用滑窗中的最后一个位姿到第m帧laser的imu meas做预积分
-        //计算pre_integrations[m]
-        //Rs[m]   Ps[m]   Vs[m]  Bas[m]   Bgs[m]
+        //计算pre_integrations[m-1]
+        //Rs[m-1]   Ps[m-1]   Vs[m-1]  Bas[m-1]   Bgs[m-1]
 
         double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
 
@@ -1637,7 +1677,10 @@ public:
                 break;
         }
 
-        imu_idx_in_kf.push_back(i - 1); //处理的每帧laser时刻,对应的imu在imu_buf[]中的index; 处理一帧laser push一个.
+        imu_idx_in_kf.push_back(i - 1); //处理的每帧laser时刻,对应的imu在imu_buf[]中的index; 
+        //处理一帧laser push一个.
+        //imu_idx_in_kf.back(): 当前处理的laser时刻,对应的imu在imu_buf[]中的index
+
 
         if(i < imu_buf.size()) {//说明imu_buf[i]->header.stamp.toSec() >= timeodom_cur
             double dt1 = timeodom_cur - cur_time_imu;
@@ -1687,7 +1730,7 @@ public:
         tmpSpeedBias.push_back(Bgs.back().x());
         tmpSpeedBias.push_back(Bgs.back().y());
         tmpSpeedBias.push_back(Bgs.back().z());
-        para_speed_bias.push_back(tmpSpeedBias);
+        para_speed_bias.push_back(tmpSpeedBias);//除了构造函数push一次, 只在此处push
         idx_imu = i;
 
         PointXYZI latestPose;
@@ -1696,9 +1739,9 @@ public:
         latestPose.y = Ps.back().y();
         latestPose.z = Ps.back().z();
         latestPose.intensity = pose_cloud_frame->points.size(); 
-        // std::printf("pose_cloud_index = %f\n", latestPose.intensity);
-        pose_cloud_frame->push_back(latestPose); //只在此处push, 点的intensity从0开始
+        pose_cloud_frame->push_back(latestPose); //只在此处push; 每处理一次key frame, push一次; 点的intensity从0开始
         //保存：Ps[]位姿
+
 
         latestPoseInfo.x = Ps.back().x();
         latestPoseInfo.y = Ps.back().y();
@@ -1709,10 +1752,9 @@ public:
         latestPoseInfo.qy = qs_last.y();
         latestPoseInfo.qz = qs_last.z();
         latestPoseInfo.idx = pose_cloud_frame->points.size();
-        // std::printf("pose_info_cloud_index = %d\n", latestPoseInfo.idx);
         latestPoseInfo.time = time_new_odom; //laser odom发出的每一odometry时刻
 
-        pose_info_cloud_frame->push_back(latestPoseInfo); //只在此处push,点的idx从1开始
+        pose_info_cloud_frame->push_back(latestPoseInfo); //只在此处push; 每处理一次key frame, push一次; 点的idx从1开始
         //保存Ps[], Rs[]位姿
 
         
@@ -1723,22 +1765,37 @@ public:
             num_kf_sliding = 0;
         }
 
-        if (pose_cloud_frame->points.size() == slide_window_width) {//第一次执行滑窗
+        if (pose_cloud_frame->points.size() == slide_window_width) {//第1次执行滑窗
             pose_each_frame->push_back(pose_cloud_frame->points[0]); //第1处push
             pose_info_each_frame->push_back(pose_info_cloud_frame->points[0]);
+            //第一次滑窗执行完,将滑窗的第一个位姿保存到pose_each_frame[0]
+
         } else if(pose_cloud_frame->points.size() > slide_window_width) {
             int ii = imu_idx_in_kf[imu_idx_in_kf.size() - slide_window_width - 1];
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
-            Eigen::Vector3d Ptmp = Ps[Ps.size() - slide_window_width];
-            Eigen::Vector3d Vtmp = Vs[Ps.size() - slide_window_width];
-            Eigen::Matrix3d Rtmp = Rs[Ps.size() - slide_window_width];
+
+            Eigen::Vector3d Ptmp = Ps[Ps.size() - slide_window_width]; //当前滑窗的第一个位姿
+            Eigen::Vector3d Vtmp = Vs[Ps.size() - slide_window_width]; //TODO: 应该是当前滑窗第一个位姿之前一个位姿?
+            Eigen::Matrix3d Rtmp = Rs[Ps.size() - slide_window_width]; //
             Eigen::Vector3d Batmp = Eigen::Vector3d::Zero();
             Eigen::Vector3d Bgtmp = Eigen::Vector3d::Zero();
-            
-            
-            //给pose_info_each_frame[] push内容 
+  
+            std::printf("pose_cloud_frame.size= %d, ii= %d, tmp= %d\n", 
+                                  pose_cloud_frame->points.size(), 
+                                  imu_idx_in_kf.size() - slide_window_width - 1, 
+                                  Ps.size() - slide_window_width); 
+            // <pose_cloud_frame.size= 4, ii= 0, tmp= 2>
+            // <pose_cloud_frame.size= 5, ii= 1, tmp= 3>
+            // <pose_cloud_frame.size= 6, ii= 2, tmp= 4>
+
+            //这段意思好像是:
+            //从当前滑窗第一个位姿之前一个位姿, 到当前滑窗第一个位姿之有很多laser buffs
+            //从当前滑窗第一个位姿之前一个位姿开始imu积分, 每处理一个laser buff得到一个位姿, 压入pose_each_frame[]
+            //
+
+            //当前滑窗执行完, 在滑窗之前的第1个位姿基础上做imu积分,不是预积分, push 到pose_each_frame[]
             for(int i = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1] + 1;
-                i < keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width]; i++) {
+                i < keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width]; i++) { //最外层laser_odom_buf[] index移动
 
                 double dt1 = each_odom_buf[i-1]->header.stamp.toSec() - imu_buf[ii]->header.stamp.toSec();
                 double dt2 = imu_buf[ii+1]->header.stamp.toSec() - each_odom_buf[i-1]->header.stamp.toSec();
@@ -1756,7 +1813,7 @@ public:
                 ii++;
                 double integStartTime = each_odom_buf[i-1]->header.stamp.toSec();
 
-                while(imu_buf[ii]->header.stamp.toSec() < each_odom_buf[i]->header.stamp.toSec()) {
+                while(imu_buf[ii]->header.stamp.toSec() < each_odom_buf[i]->header.stamp.toSec()) {//最里层imu_buf[] index移动
                     double t = imu_buf[ii]->header.stamp.toSec();
                     double dt = t - integStartTime;
                     integStartTime = imu_buf[ii]->header.stamp.toSec();
@@ -1847,10 +1904,15 @@ public:
                 pose_info_each_frame->push_back(latestPoseInfo);
             }//end for
 
+
             //最后一处push
             pose_each_frame->push_back(pose_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]); 
             pose_info_each_frame->push_back(pose_info_cloud_frame->points[pose_cloud_frame->points.size() - slide_window_width]);
+
             int j = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width];
+            std::printf("j= %d\n", pose_cloud_frame->points.size() - slide_window_width);
+            //j= 1, 2, 3, 4, 5...
+            //始终 j = pose_cloud_frame.size - 3
 
             double dt1 = each_odom_buf[j-1]->header.stamp.toSec() - imu_buf[ii]->header.stamp.toSec();
             double dt2 = imu_buf[ii+1]->header.stamp.toSec() - each_odom_buf[j-1]->header.stamp.toSec();
@@ -1945,10 +2007,13 @@ public:
             Ptmp += dt1 * Vtmp + 0.5 * dt1 * dt1 * un_acc;
             Vtmp += dt1 * un_acc;
 
+
+            //下面开始使用上面计算的pose_each_frame[], pose_info_each_frame[]
             vector<double*> paraBetweenEachFrame;
             int numPara = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width] - keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1];
             double dQuat[numPara][4];
             double dTrans[numPara][3];
+
             for(int i = keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width - 1] + 1;
                 i < keyframe_id_in_frame[pose_cloud_frame->points.size() - slide_window_width]; i++) {
                 Eigen::Vector3d tmpTrans = Eigen::Vector3d(pose_each_frame->points[i].x,
@@ -2009,7 +2074,7 @@ public:
             paraBetweenEachFrame.push_back(dQuat[numPara-1]);
 
 
-            optimizeLocalGraph(paraBetweenEachFrame);
+            optimizeLocalGraph(paraBetweenEachFrame); //local graph optimization
         }
 
         if (!loop_closure_on)
@@ -2288,7 +2353,8 @@ public:
         edge_local_map_ds->clear();
         surf_local_map->clear();
         surf_local_map_ds->clear();
-
+        
+        //当处理 >=第9keyframe时, 把当前vector中最开始的那个关键帧内容释放, 即保留一个nullptr
         if(surf_lasts_ds.size() > slide_window_width + 5) {
             surf_lasts_ds[surf_lasts_ds.size() - slide_window_width - 6]->clear();
         }
@@ -2577,6 +2643,7 @@ public:
             //cout<<"map_pub_cnt: "<<++map_pub_cnt<<endl;
 
             laser_num++;
+            std::printf("laser_index = %d start\n", laser_num);
 
             Timer t_map("BackendFusion");
             buildLocalMapWithLandMark(); //建立edge_local_map, surf_local_map
@@ -2588,7 +2655,7 @@ public:
             runtime += t_map.toc();
             //cout<<"BackendFusion average run time: "<<runtime / each_odom_buf.size()<<endl;
 
-            std::printf("laser_index = %d done!\n\n", laser_num);
+            std::printf("laser_index = %d done!\n\n\n", laser_num);
         }
     }
 };
