@@ -8,6 +8,9 @@
 #include <ceres/ceres.h>
 
 
+//这个文件是构建local graph optimization时使用
+
+
 struct LidarPoseFactorAutoDiff
 {
 public:
@@ -27,8 +30,8 @@ public:
         Eigen::Quaternion<T> tmp_delta_q(T(delta_q.w()), T(delta_q.x()), T(delta_q.y()), T(delta_q.z()));
         Eigen::Matrix<T, 3, 1> tmp_delta_p(T(delta_p.x()), T(delta_p.y()), T(delta_p.z()));
 
-        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec();
-        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p;
+        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec(); //轴角残差
+        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p; //平移残差
 
         residuals[0] = T(0.2) * residual1[0];
         residuals[1] = T(0.2) * residual1[1];
@@ -62,7 +65,7 @@ public:
     {}
 
     template <typename T>
-    bool operator()(const T *p1, const T *p2, T *residuals) const
+    bool operator()(const T *p1, const T *p2, T *residuals) const //第一个间隔的终止位姿, 是需要优化的变量
     {
         Eigen::Matrix<T, 3, 1> P1(T(pl.x()), T(pl.y()), T(pl.z()));
         Eigen::Quaternion<T> Q1(T(ql.w()), T(ql.x()), T(ql.y()), T(ql.z()));
@@ -73,8 +76,8 @@ public:
         Eigen::Quaternion<T> tmp_delta_q(T(delta_q.w()), T(delta_q.x()), T(delta_q.y()), T(delta_q.z()));
         Eigen::Matrix<T, 3, 1> tmp_delta_p(T(delta_p.x()), T(delta_p.y()), T(delta_p.z()));
 
-        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec();
-        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p;
+        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec(); //轴角残差
+        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p; //平移残差
 
         residuals[0] = T(0.2) * residual1[0];
         residuals[1] = T(0.2) * residual1[1];
@@ -95,9 +98,9 @@ public:
 
 private:
     Eigen::Quaterniond delta_q;
-    Eigen::Vector3d delta_p;
+    Eigen::Vector3d delta_p; //第一个间隔的delta_T, imu约束
     Eigen::Quaterniond ql;
-    Eigen::Vector3d pl;
+    Eigen::Vector3d pl; //第一个间隔的起始位姿, 注意: 这个位姿不是优化变量
 };
 
 
@@ -111,7 +114,7 @@ public:
     {}
 
     template <typename T>
-    bool operator()(const T *p1, const T *p2, T *residuals) const
+    bool operator()(const T *p1, const T *p2, T *residuals) const //最后一个间隔的起始位姿, 是需要优化的变量
     {
         Eigen::Matrix<T, 3, 1> P2(T(pr.x()), T(pr.y()), T(pr.z()));
         Eigen::Quaternion<T> Q2(T(qr.w()), T(qr.x()), T(qr.y()), T(qr.z()));
@@ -122,8 +125,8 @@ public:
         Eigen::Quaternion<T> tmp_delta_q(T(delta_q.w()), T(delta_q.x()), T(delta_q.y()), T(delta_q.z()));
         Eigen::Matrix<T, 3, 1> tmp_delta_p(T(delta_p.x()), T(delta_p.y()), T(delta_p.z()));
 
-        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec();
-        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p;
+        Eigen::Matrix<T, 3, 1> residual1 = T(2.0) * (tmp_delta_q.inverse() * Q1.inverse() * Q2).vec();  //轴角残差
+        Eigen::Matrix<T, 3, 1> residual2 = Q1.inverse() * (P2 - P1) - tmp_delta_p;   //平移残差
 
         residuals[0] = T(0.2) * residual1[0];
         residuals[1] = T(0.2) * residual1[1];
@@ -144,7 +147,7 @@ public:
 
 private:
     Eigen::Quaterniond delta_q;
-    Eigen::Vector3d delta_p;
+    Eigen::Vector3d delta_p; //最后一个间隔delta_T
     Eigen::Quaterniond qr;
-    Eigen::Vector3d pr;
+    Eigen::Vector3d pr; //最后一个间隔的终止位姿, 注意: 这个位姿不是优化变量
 };

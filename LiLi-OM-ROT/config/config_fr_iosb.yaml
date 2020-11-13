@@ -20,7 +20,7 @@ lidar_odometry:
 
 backend_fusion:
   max_num_iter: 15
-  loop_closure_on: true
+  loop_closure_on: true  #default true
   local_map_width: 50
   lc_search_radius: 15
   lc_map_width: 25

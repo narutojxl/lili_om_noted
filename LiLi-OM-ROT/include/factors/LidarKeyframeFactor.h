@@ -44,7 +44,7 @@ struct LidarEdgeFactor
         Eigen::Matrix<T, 3, 1> lp;
         Eigen::Matrix<T, 3, 1> p_w; //在对应时刻的imu下
         p_w = q_l_b.inverse() * (cp - t_l_b);
-        lp = q_last_curr * cp + t_last_curr; //TODO: 应该为 p_w ？
+        lp = q_last_curr * p_w + t_last_curr; 
 
         Eigen::Matrix<T, 3, 1> nu = (lp - lpa).cross(lp - lpb);
         Eigen::Matrix<T, 3, 1> de = lpa - lpb;
