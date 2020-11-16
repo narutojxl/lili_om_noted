@@ -1800,7 +1800,7 @@ public:
 
             Eigen::Vector3d Ptmp = Ps[Ps.size() - slide_window_width]; //当前滑窗的第一个位姿
             Eigen::Vector3d Vtmp = Vs[Ps.size() - slide_window_width]; //TODO: 应该是当前滑窗第一个位姿之前一个keyframe位姿?
-            Eigen::Matrix3d Rtmp = Rs[Ps.size() - slide_window_width]; 
+            Eigen::Matrix3d Rtmp = Rs[Ps.size() - slide_window_width]; //https://github.com/KIT-ISAS/lili-om/issues/7
             Eigen::Vector3d Batmp = Eigen::Vector3d::Zero();
             Eigen::Vector3d Bgtmp = Eigen::Vector3d::Zero();
   
@@ -2262,6 +2262,7 @@ public:
                 transitionRel.push_back(quaternionFrom.inverse() * (transitionTo - transitionFrom));
             }
 
+            //把gtsam更新后的值重新赋值回pose_each_frame[]
             for (int i = 0; i < numPoses; ++i) {
                 pose_each_frame->points[i].x = glocal_estimated.at<gtsam::Pose3>(i).translation().x();
                 pose_each_frame->points[i].y = glocal_estimated.at<gtsam::Pose3>(i).translation().y();
@@ -2275,7 +2276,9 @@ public:
                 pose_info_each_frame->points[i].qy = glocal_estimated.at<gtsam::Pose3>(i).rotation().toQuaternion().y();
                 pose_info_each_frame->points[i].qz = glocal_estimated.at<gtsam::Pose3>(i).rotation().toQuaternion().z();
             }
-
+            
+            //把gtsam更新后的值重新赋值pose_cloud_frame[], abs_poses[], Rs[], Ps[]
+            //第一个区间
             for(int i = 0; i <= pose_cloud_frame->points.size() - slide_window_width; i++) {
                 pose_cloud_frame->points[i].x = pose_each_frame->points[keyframe_id_in_frame[i]].x;
                 pose_cloud_frame->points[i].y = pose_each_frame->points[keyframe_id_in_frame[i]].y;
@@ -2306,7 +2309,8 @@ public:
                 Ps[i+1][1] = abs_poses[i+1][5];
                 Ps[i+1][2] = abs_poses[i+1][6];
             }
-
+            
+            //第二个区间
             for(int i = abs_poses.size() - slide_window_width; i < abs_poses.size() - 1; i++) {
                 Eigen::Quaterniond integratedQuaternion(abs_poses[i][0],
                         abs_poses[i][1],
@@ -2354,7 +2358,7 @@ public:
                 last_pose[i] = abs_poses[abs_poses.size() - slide_window_width][i];
             }
 
-            select_pose.x = last_pose[4];
+            select_pose.x = last_pose[4]; //当前滑窗的第一个位姿
             select_pose.y = last_pose[5];
             select_pose.z = last_pose[6];
 
@@ -2366,7 +2370,7 @@ public:
     void publishOdometry() {
         if(pose_info_cloud_frame->points.size() >= slide_window_width) { //发布的是当前滑窗的第一个位姿
             odom_mapping.header.stamp = ros::Time().fromSec(time_new_odom);//TODO: 时间戳是当前滑窗的最后一个位姿的时间戳
-            odom_mapping.pose.pose.orientation.w = pose_info_cloud_frame->points[pose_info_cloud_frame->points.size()-slide_window_width].qw; //-1 ?
+            odom_mapping.pose.pose.orientation.w = pose_info_cloud_frame->points[pose_info_cloud_frame->points.size()-slide_window_width].qw; //不是减去滑窗大小,应该 -1 ?
             odom_mapping.pose.pose.orientation.x = pose_info_cloud_frame->points[pose_info_cloud_frame->points.size()-slide_window_width].qx; 
             odom_mapping.pose.pose.orientation.y = pose_info_cloud_frame->points[pose_info_cloud_frame->points.size()-slide_window_width].qy;
             odom_mapping.pose.pose.orientation.z = pose_info_cloud_frame->points[pose_info_cloud_frame->points.size()-slide_window_width].qz;
@@ -2516,13 +2520,14 @@ public:
                     pose_info_cloud_frame->points[latest_frame_idx_loop-j].z);
 
             Eigen::Quaterniond q_tmp = q_po * q_bl;
-            Eigen::Vector3d t_tmp = q_po * t_bl + t_po;
+            Eigen::Vector3d t_tmp = q_po * t_bl + t_po; //[q_tmp, t_tmp]: 对应时刻的laser位姿
 
             *latest_key_frames += *transformCloud(edge_frames[latest_frame_idx_loop-j], q_tmp, t_tmp);
             *latest_key_frames += *transformCloud(surf_frames[latest_frame_idx_loop-j], q_tmp, t_tmp);
+            //latest_key_frames: 在map下
         }
 
-        ds_filter_his_frames.setInputCloud(latest_key_frames);
+        ds_filter_his_frames.setInputCloud(latest_key_frames); //current local map(最多6帧)和history local map(最多50帧)的降采样程度是一样的
         ds_filter_his_frames.filter(*latest_key_frames_ds);
 
 
@@ -2545,6 +2550,7 @@ public:
 
             *his_key_frames += *transformCloud(edge_frames[closest_his_idx+j], q_tmp, t_tmp);
             *his_key_frames += *transformCloud(surf_frames[closest_his_idx+j], q_tmp, t_tmp);
+            //his_key_frames: 在map下
         }
 
         ds_filter_his_frames.setInputCloud(his_key_frames);
@@ -2573,8 +2579,8 @@ public:
         icp.setEuclideanFitnessEpsilon(1e-6);
         icp.setRANSACIterations(5);
 
-        icp.setInputSource(latest_key_frames_ds);
-        icp.setInputTarget(his_key_frames_ds);
+        icp.setInputSource(latest_key_frames_ds); //在map下
+        icp.setInputTarget(his_key_frames_ds);   //在map下
         pcl::PointCloud<PointType>::Ptr alignedCloud(new pcl::PointCloud<PointType>());
         icp.align(*alignedCloud);
 
@@ -2623,7 +2629,7 @@ public:
 
         glocal_pose_graph.add(gtsam::BetweenFactor<gtsam::Pose3>(keyframe_id_in_frame[latest_frame_idx_loop],
                                                                  keyframe_id_in_frame[closest_his_idx],
-                                                                 poseFrom.between(poseTo),
+                                                                 poseFrom.between(poseTo), //poseFrom.inv() * poseTo
                                                                  constraint_noise));
         isam->update(glocal_pose_graph);
         isam->update();
@@ -2631,7 +2637,8 @@ public:
 
         loop_closed = true;
 
-        glocal_estimated = isam->calculateEstimate();
+        glocal_estimated = isam->calculateEstimate(); //唯一一处赋值, 每发生一次闭环赋值一次.
+
         correctPoses();
 
         if (last_marginalization_info) {
@@ -2713,7 +2720,7 @@ public:
         }
         ds_filter_global_map.setInputCloud(global_map);
         ds_filter_global_map.filter(*global_map_ds);
-        pcl::io::savePCDFileASCII("/home/mli/MengLi/pcd/global_map.pcd", *global_map_ds);
+        pcl::io::savePCDFileASCII("/home/jxl/lili_om_rot_global_map.pcd", *global_map_ds);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
         global_map->clear();

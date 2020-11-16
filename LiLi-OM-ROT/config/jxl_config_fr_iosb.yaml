@@ -19,19 +19,19 @@ lidar_odometry:
   if_to_deskew: false  #已经在preprocessing环节去歪斜了(转换到当前帧start下)
 
 backend_fusion:
-  max_num_iter: 15   #滑窗优化时迭代的次数
+  max_num_iter: 15      #滑窗优化时迭代的次数
   loop_closure_on: true
   local_map_width: 50
-  lc_search_radius: 15
-  lc_map_width: 25
-  lc_icp_thres: 0.2
+  lc_search_radius: 15  #在当前keyframe附近,在所有的keyframes data set中二叉树检测最近邻时的阈值
+  lc_map_width: 25      #与当前帧最近且时间戳大于60s的history帧, 左右各25帧建立history map
+  lc_icp_thres: 0.2     #icp匹配的阈值
   slide_window_width: 3
   imu_topic: "/imu/data"       # "/applanix/imu"  
-  lidar_const: 7.5    #laser残差的权重值
-  mapping_interval: 2
-  lc_time_thres: 60.0
+  lidar_const: 7.5             #laser残差的权重值
+  mapping_interval: 2    #建图结束时每隔几个关键帧保存地图pcd; 每隔多少间隔的keyframe发布一次global map
+  lc_time_thres: 60.0    #当前帧与最近邻的历史帧的时间戳必须得>60s,才有可能发生闭环. lego_loam基于位置去检测的闭环.
   surf_dist_thres: 0.12  #平面距离不超过该阈值时，这些点形成的平面才是一个有效的平面
-  kd_max_radius: 1.0  #laser下的点根据位姿的初值，转换到map，在map的kd tree中找最近的5个点，最远点与转换后的点的距离不能超过1.0
+  kd_max_radius: 1.0     #laser下的点根据位姿的初值，转换到map，在map的kd tree中找最近的5个点，最远点与转换后的点的距离不能超过1.0
   save_pcd: false
 
 #extrinsic imu to lidar

@@ -16,20 +16,19 @@ preprocessing:
 lidar_odometry:
   max_num_iter: 12
   scan_match_cnt: 1
-  if_to_deskew: false  #已经在preprocessing环节去歪斜了(转换到当前帧start下)
-
+  if_to_deskew: false 
 backend_fusion:
   max_num_iter: 15
   loop_closure_on: true  #default true
   local_map_width: 50
-  lc_search_radius: 15
-  lc_map_width: 25
+  lc_search_radius: 15   
+  lc_map_width: 25       
   lc_icp_thres: 0.2
   slide_window_width: 3
   imu_topic: "/applanix/imu"
   lidar_const: 7.5
   mapping_interval: 2
-  lc_time_thres: 60.0
+  lc_time_thres: 60.0   
   surf_dist_thres: 0.12
   kd_max_radius: 1.0
   save_pcd: true  #false
