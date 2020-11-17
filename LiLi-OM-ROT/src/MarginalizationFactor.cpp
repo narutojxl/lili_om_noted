@@ -111,22 +111,24 @@ void MarginalizationInfo::AddResidualBlockInfo(ResidualBlockInfo *residual_block
     for (int i = 0; i < static_cast<int>(residual_block_info->parameter_blocks.size()); i++) {
         double *addr = parameter_blocks[i];
         int size = parameter_block_sizes[i];
+        // std::printf("i = %d, addr = 0x%x, addr_long = %ld, size = %d\n", i, addr, reinterpret_cast<long>(addr), size);
         parameter_block_size[reinterpret_cast<long>(addr)] = size;
-    }
+    }   
 
     if(residual_block_info->drop_set.size() == 0) return;
 
     for (int i = 0; i < static_cast<int>(residual_block_info->drop_set.size()); i++) {
         double *addr = parameter_blocks[residual_block_info->drop_set[i]];
-        parameter_block_idx[reinterpret_cast<long>(addr)] = 0;  //<marg位姿自己的参数块的地址, 0>
+        parameter_block_idx[reinterpret_cast<long>(addr)] = 0; 
+        //imu: 滑窗的第一个位姿的P, Q, VBaBg所对应的地址的value值为0
+        //marg帧的laser points: 滑窗的第一个位姿的P, Q所对应的地址的value值为0
     }
 }
 
 
 void MarginalizationInfo::PreMarginalize() {
-    for (auto it : factors) {//factors: marg对象的所有ResidualBlockInfo
+    for (auto it : factors) {//factors: marg对象的所有ResidualBlockInfos
         it->Evaluate(); //计算每个残差项，以及残差对优化变量的雅克比
-
         std::vector<int> block_sizes = it->cost_function->parameter_block_sizes();
         for (int i = 0; i < static_cast<int>(block_sizes.size()); i++) {
             long addr = reinterpret_cast<long>(it->parameter_blocks[i]);
@@ -140,7 +142,7 @@ void MarginalizationInfo::PreMarginalize() {
     }
 }
 
-
+//四元数的local size为3
 int MarginalizationInfo::LocalSize(int size) const {
     return size == 4 ? 3 : size;
 }
@@ -157,17 +159,26 @@ void MarginalizationInfo::Marginalize() {
     //tmpSpeedBias[0]地址:  offset=6
 
     m = pos; //m=15=3+3+9
+    
+    std::printf("parameter_block_size = %d, parameter_block_idx = %d\n", parameter_block_size.size(), parameter_block_idx.size());
+    //parameter_block_size = 8, parameter_block_idx = 3
 
     for (const auto &it : parameter_block_size) { //<参数块的地址, 每个参数块的大小>
-        if (parameter_block_idx.find(it.first) == parameter_block_idx.end()) {
+        if (parameter_block_idx.find(it.first) == parameter_block_idx.end()) {//第2帧(P, Q, VBaBg) + 第3帧的(P, Q)
             parameter_block_idx[it.first] = pos;
             pos += LocalSize(it.second);
         }
     }
-    //计算窗口内非marg帧参数块的偏移量
+    std::printf("parameter_block_size = %d, parameter_block_idx = %d\n", parameter_block_size.size(), parameter_block_idx.size());
+    //parameter_block_size = 8, parameter_block_idx = 8
+    // std::printf("parameter_block_idx\n");
+    // for(const auto& it: parameter_block_idx){
+    //     std::printf("pair<addr_long = %ld, id = %d>\n", it.first, it.second);
+    // }
 
-    n = pos - m; //前m个是需要marg掉的, 剩下n个是需要保留的, pos: 滑窗内所有参数块维数之和
-    //n = 30 ? 
+    n = pos - m; //前m个是需要marg掉的, 剩下n个是需要保留的
+    std::printf("marg size = %d, remain size = %d\n", m, n);
+    //marg size = 15, remain size = 21(第2帧(P, Q, VBaBg) + 第3帧的(P, Q))
 
     Eigen::MatrixXd A(pos, pos);
     Eigen::VectorXd b(pos);
@@ -224,7 +235,7 @@ void MarginalizationInfo::Marginalize() {
     //FEJ:
     //由于剩余状态Xn还在滑窗内,在下次迭代优化时会被继续优化.
     //当引入新的观测后，这些Xn状态量是会发生变化的，此时就和边缘化时的Xn状态量不一样了，
-    //从而导致边缘化时产生的关于Xn雅可比和残差项都发生了变化,导致H矩阵的N(H)空间秩发生了变化,引入了错误的信息.
+    //从而导致边缘化时产生的关于Xn的雅可比和残差项都发生了变化,导致H矩阵的N(H)空间秩发生了变化,引入了错误的信息.
     //在每次优化迭代时：
     //对于状态Xn，残差对Xn的雅克比一直是边缘化时Xn的值带入到雅克比表达式中
     //但是状态Xn每次都在更新，只是说Xn的线性化点是固定不变的。
@@ -262,14 +273,19 @@ std::vector<double *> MarginalizationInfo::GetParameterBlocks(std::unordered_map
     keep_block_data.clear();
 
     for (const auto &it : parameter_block_idx) {//<每个参数块的地址, 在矩阵中的id> 
-        if (it.second >= m) {//marg后剩余状态的维数
-            keep_block_size.push_back(parameter_block_size[it.first]); //本次滑窗第二个,第三个位姿参数块的大小
-            keep_block_idx.push_back(parameter_block_idx[it.first]);   //本次滑窗第二个,第三个位姿参数块的偏移量
-            keep_block_data.push_back(parameter_block_data[it.first]); //本次滑窗第二个,第三个位姿参数块的raw data
-            keep_block_addr.push_back(addr_shift[it.first]); //raw指针分别指向本次滑窗中第一个位姿(被marg掉)参数块的raw data,第二个位姿参数块的raw data
+        if (it.second >= m) {//marg后剩余状态的id, 这4个keep变量大小始终为5(第2帧(P, Q, VBaBg) + 第3帧的(P, Q))
+            keep_block_size.push_back(parameter_block_size[it.first]); //本次滑窗第2帧(P, Q, VBaBg) + 第3帧的(P, Q)参数块的大小
+            keep_block_idx.push_back(parameter_block_idx[it.first]);   //本次滑窗第2帧(P, Q, VBaBg) + 第3帧的(P, Q)参数块的偏移量
+            keep_block_data.push_back(parameter_block_data[it.first]); //本次滑窗第2帧(P, Q, VBaBg) + 第3帧的(P, Q)参数块的raw data
+            keep_block_addr.push_back(addr_shift[it.first]); //raw指针分别指向本次滑窗中第一个位姿参数块(P, Q, VBaBg)的raw data, 第二个位姿参数块(P, Q)的raw data
+
+            // std::printf("parameter_block_size[it.first] = %d, parameter_block_idx[it.first] = %d,  addr_shift[it.first] = 0x%x\n", 
+            //              parameter_block_size[it.first],      parameter_block_idx[it.first],       addr_shift[it.first]);
+            std::printf("addr_shift[it.first] = 0x%x\n", addr_shift[it.first]);            
         }
     }
-    sum_block_size = std::accumulate(std::begin(keep_block_size), std::end(keep_block_size), 0); //not used 
+    sum_block_size = std::accumulate(std::begin(keep_block_size), std::end(keep_block_size), 0); 
+    //该变量没有使用
 
     return keep_block_addr; 
 }
@@ -288,6 +304,7 @@ MarginalizationFactor::MarginalizationFactor(MarginalizationInfo *_marginalizati
     }
     set_num_residuals(marginalization_info->n);
 };
+
 
 
 //利用边缘化得到的雅可比和残差，构造先验信息进入到非线性优化中

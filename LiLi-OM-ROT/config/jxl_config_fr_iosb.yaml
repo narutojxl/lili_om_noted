@@ -21,7 +21,7 @@ lidar_odometry:
 backend_fusion:
   max_num_iter: 15      #滑窗优化时迭代的次数
   loop_closure_on: true
-  local_map_width: 50
+  local_map_width: 50   #local map的关键帧数量
   lc_search_radius: 15  #在当前keyframe附近,在所有的keyframes data set中二叉树检测最近邻时的阈值
   lc_map_width: 25      #与当前帧最近且时间戳大于60s的history帧, 左右各25帧建立history map
   lc_icp_thres: 0.2     #icp匹配的阈值

@@ -27,30 +27,34 @@ struct ResidualBlockInfo {
     std::vector<double *> parameter_blocks;
     std::vector<int> drop_set;
     
-    //注意: 窗口内的位姿是imu在map下的位姿,不是laser在map下的位姿
-    //如下种类的ResidualBlockInfo, 被添加到本次marg对象
+    //注意: 窗口内的位姿是imu在map下的位姿, 不是laser在map下的位姿
+    //如下4类的ResidualBlockInfo, 被添加到本次marg对象
 
-    //marg位姿的imu预积分残差, P V Q Ba Bg, 15*1 , 产生一个ResidualBlockInfo对象
+    //<1>marg位姿的imu预积分残差, P V Q Ba Bg, 15*1 , 产生一个ResidualBlockInfo
     //parameter_blocks: 6个,  tmpTrans[0], tmpQuat[0], tmpSpeedBias[0], tmpTrans[1], tmpQuat[1], tmpSpeedBias[1]
+    //每个参数的大小为:              3           4               9            3             4              9
     //drop_set:               vector<int>{0, 1, 2}
 
 
-    //marg位姿自己帧的laser残差, 每个有效point产生一个ResidualBlockInfo对象
+    //<2>marg位姿自己帧的laser残差
     //parameter_blocks: 2个,  tmpTrans[0], tmpQuat[0]
+    //每个参数的大小为:               3          4
     //drop_set:              vector<int>{0, 1}
 
 
-    //窗口内其他帧的laser残差,  0 < i <= 滑窗size - 1, 每个有效point产生一个ResidualBlockInfo对象
-    //parameter_blocks: 2个,  tmpTrans[i], tmpQuat[i]
-    //drop_set:         空
+    //<3>窗口内其他帧的laser残差
+    //第2帧
+    //parameter_blocks: 2个,  tmpTrans[1], tmpQuat[1] 
+    //drop_set:                    空
+
+    //第3帧
+    //parameter_blocks: 2个,  tmpTrans[2], tmpQuat[2] 
+    //drop_set:                    空
 
 
-    //
+    //<4>上一帧边缘化产生的残差
     //parameter_blocks: last_marginalization_parameter_blocks
-    //drop_set:          vector<int>{3, 4, 5} ?
-
-
-
+    //drop_set:          ?
 
 
     double **raw_jacobians; //大小：由该残差块有多少个参数块决定；每个存放的是：残差对每个参数块的雅克比
@@ -81,7 +85,7 @@ public:
     std::unordered_map<long, int> parameter_block_size; //global size,  <每个参数块的地址, 每个参数块的大小>
     int sum_block_size;
     std::unordered_map<long, int> parameter_block_idx; //local size,   <每个参数块的地址, 在矩阵中的id>  
-    std::unordered_map<long, double *> parameter_block_data;//         <每个参数块的地址, 指向每个参数块的raw指针>
+    std::unordered_map<long, double *> parameter_block_data;         //<每个参数块的地址, 指向每个参数块的raw指针>
 
 
     std::vector<int> keep_block_size; //global size

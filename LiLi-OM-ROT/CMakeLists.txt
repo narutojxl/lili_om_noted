@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 2.8.3)
 project(lili_om_rot)
 
 ## Compile as C++14, supported in ROS Kinetic and newer
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -O3")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14  -g   -Wall  -O0   ")
 
 
 # For Debug

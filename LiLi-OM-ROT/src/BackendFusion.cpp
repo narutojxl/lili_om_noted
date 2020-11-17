@@ -262,26 +262,28 @@ public:
 
 
     void printWindow(){
-        std::printf("tmpQuat\n");
+        // std::printf("tmpTrans\n");
         for(int i = 0; i < slide_window_width; i++){
-            std::cout<<tmpQuat[i][0]<<" "<<tmpQuat[i][1]<<" "<<tmpQuat[i][2]<<" "<<tmpQuat[i][3]<<"\n";
+            std::printf("tmpTrans[%d] addr = 0x%x, addr_long = %ld, content = \n", i, tmpTrans[i], reinterpret_cast<long>(tmpTrans[i]));
+            // std::cout<<tmpTrans[i][0]<<" "<<tmpTrans[i][1]<<" "<<tmpTrans[i][2]<<"\n";
         }
-        std::printf("tmpQuat done\n\n");
+        // std::printf("tmpTrans done\n\n");
 
-        std::printf("tmpTrans\n");
+        // std::printf("tmpQuat\n");
         for(int i = 0; i < slide_window_width; i++){
-            std::cout<<tmpTrans[i][0]<<" "<<tmpTrans[i][1]<<" "<<tmpTrans[i][2]<<"\n";
+            std::printf("tmpQuat[%d] addr = 0x%x, addr_long = %ld, content = \n", i, tmpQuat[i], reinterpret_cast<long>(tmpQuat[i]));
+            // std::cout<<tmpQuat[i][0]<<" "<<tmpQuat[i][1]<<" "<<tmpQuat[i][2]<<" "<<tmpQuat[i][3]<<"\n";
         }
-        std::printf("tmpTrans done\n\n");
+        // std::printf("tmpQuat done\n\n");
 
-        std::printf("tmpSpeedBias\n");
+        // std::printf("tmpSpeedBias\n");
         for(int i = 0; i < slide_window_width; i++){
-            std::cout<<tmpSpeedBias[i][0]<<" "<<tmpSpeedBias[i][1]<<" "<<tmpSpeedBias[i][2]<<" "
-                     <<tmpSpeedBias[i][3]<<" "<<tmpSpeedBias[i][4]<<" "<<tmpSpeedBias[i][5]<<" "
-                     <<tmpSpeedBias[i][6]<<" "<<tmpSpeedBias[i][7]<<" "<<tmpSpeedBias[i][8]<<"\n";
-                  
+            std::printf("tmpSpeedBias[%d] addr = 0x%x, addr_long = %ld, content = \n", i, tmpSpeedBias[i], reinterpret_cast<long>(tmpSpeedBias[i]) );
+            // std::cout<<tmpSpeedBias[i][0]<<" "<<tmpSpeedBias[i][1]<<" "<<tmpSpeedBias[i][2]<<" "
+            //          <<tmpSpeedBias[i][3]<<" "<<tmpSpeedBias[i][4]<<" "<<tmpSpeedBias[i][5]<<" "
+            //          <<tmpSpeedBias[i][6]<<" "<<tmpSpeedBias[i][7]<<" "<<tmpSpeedBias[i][8]<<"\n";         
         }
-        std::printf("tmpSpeedBias done\n\n");
+        // std::printf("tmpSpeedBias done\n\n");
     }
 
 
@@ -789,9 +791,9 @@ public:
             ceres::Problem problem;
  
             //下面涉及很多　｛　keyframe_idx[keyframe_idx.size()-slide_window_width],  keyframe_idx.back()　｝
-            //第1次关键帧: [1 2 3]
-            //第2次关键帧: [2 3 4]
-            //第3次关键帧: [3 4 5]
+            //第1次: [1 2 3]
+            //第2次: [2 3 4]
+            //第3次: [3 4 5]
             // ...
 
             //eigen to double
@@ -835,7 +837,7 @@ public:
                     MarginalizationFactor *marginalization_factor = new MarginalizationFactor(last_marginalization_info);
                     problem.AddResidualBlock(marginalization_factor, NULL,
                                              last_marginalization_parameter_blocks);
-                                           //存储的raw指针分别指向上次滑窗中第一个位姿(被marg掉)参数块的raw data,第二个位姿参数块的raw data
+                             //raw指针分别指向上次滑窗中第一个位姿参数块(P, Q, VBaBg)的raw data, 第二个位姿参数块(P, Q)的raw data
                  //当前滑窗中的第一, 第二个位姿由于也在上次滑窗中存在, 优化过程中不断更新上次边缘化留下的残差 
                 }
             }
@@ -859,7 +861,7 @@ public:
             //tmpQuat, tmpTrans, tmpSpeedBias
 
             //滑窗内每相邻两帧imu预积分残差
-            for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx < keyframe_idx.back(); ++idx) {
+            for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx < keyframe_idx.back(); ++idx) {    
                 //add imu factor
                 ImuFactor *imuFactor = new ImuFactor(pre_integrations[idx+1]);
                 problem.AddResidualBlock(imuFactor, NULL, tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]],
@@ -969,7 +971,8 @@ public:
         //b. 本次滑窗marg帧与第二个位姿的imu预积分残差
         //c. 本次滑窗每帧laser points与local map对应点之间的残差
 
-        // 在本次滑窗marg时, tmpTrans  tmpQuat  tmpSpeedBias保持不变, 只是在计算本次的marg对象,给下次滑窗用
+        // 在本次滑窗marg时, 
+        // tmpTrans  tmpQuat  tmpSpeedBias保持不变, 只是在计算本次的marg对象,给下次滑窗用
         // printWindow();
 
         MarginalizationInfo *marginalization_info = new MarginalizationInfo(); //marg_info赋值
@@ -983,7 +986,11 @@ public:
                     drop_set.push_back(i);
             }
 
-            //TODO drop_set: <0, 2, 4>;  <0, 1, 2>; <0, 1, 4>, <0, 2, 3>;  <0, 1, 4>每次运行不固定
+            //TODO drop_set: 每次运行不固定
+            //<0, 2, 4>;  
+            //<0, 1, 2>; 
+            //<0, 1, 4>, <0, 2, 3>;  
+            //<0, 1, 4>
             // std::printf("drop_set: ");
             // for(const auto& it : drop_set){
             //     std::printf("%d, ", it);
@@ -1039,12 +1046,13 @@ public:
             marg = true; //只在此处置true
         }
     
-
+        
         //!窗口内的第一个位姿是要marg的位姿
+        printWindow();
 
         //imu
         ImuFactor *imuFactor = new ImuFactor(pre_integrations[keyframe_idx[keyframe_idx.size()-slide_window_width]+1]);
-
+        //imuFactor: 窗口内第一个位姿和第二个位姿之间的imu预积分对象
         ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(imuFactor, NULL,
                                                                        vector<double *>{
                                                                            tmpTrans[0],
@@ -1054,16 +1062,20 @@ public:
                                                                            tmpQuat[1],
                                                                            tmpSpeedBias[1] //第二个位姿相关的参数块
                                                                        },
-                                                                       vector<int>{0, 1, 2}); 
-        //窗口内第一个位姿和第二个位姿之间的imu预积分残差
+                                                                      vector<int>{0, 1, 2}); 
+        std::cout<<"\nmarg: add imu start \n";
         marginalization_info->AddResidualBlockInfo(residual_block_info);
+        std::cout<<"marg: add imu done \n\n";
         //添加到marg对象中
 
 
-        //lidar
+          //lidar
+          //idx: 依次循环滑窗内的关键帧
         for (int idx = keyframe_idx[keyframe_idx.size()-slide_window_width]; idx <= keyframe_idx.back(); idx++) {
             ceres::LossFunction *lossFunction = new ceres::CauchyLoss(1.0);
             int idVec = idx - keyframe_idx[keyframe_idx.size()-slide_window_width];
+            // std::printf("================================================for loop index = %d================================================\n", idVec );
+
             if (surf_local_map_ds->points.size() > 50 && edge_local_map_ds->points.size() > 0) {
                 vector<double*> tmp;
                 tmp.push_back(tmpTrans[idx-keyframe_idx[keyframe_idx.size()-slide_window_width]]);
@@ -1090,7 +1102,8 @@ public:
                     ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(costFunction, lossFunction,
                                                                                    tmp,
                                                                                    drop_set);
-                    marginalization_info->AddResidualBlockInfo(residual_block_info);
+                    // std::printf("marg: add laser surf index = %d start \n", i);
+                    marginalization_info->AddResidualBlockInfo(residual_block_info); //每个有效point产生一个ResidualBlockInfo
                 }
 
 
@@ -1118,7 +1131,9 @@ public:
                     ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(costFunction, lossFunction,
                                                                                    tmp,
                                                                                    drop_set);
-                    marginalization_info->AddResidualBlockInfo(residual_block_info);
+                    // std::printf("marg: add laser edge index = %d start \n", i);
+                    marginalization_info->AddResidualBlockInfo(residual_block_info); //每个有效point产生一个ResidualBlockInfo
+                   
                 }
 
             }
@@ -1137,20 +1152,28 @@ public:
             vec_surf_res_cnt[idVec] = 0;
             vec_surf_scores[idVec].clear();
         }
-
+        
+        std::cout<<"ready for premarg\n\n";
         marginalization_info->PreMarginalize(); //对marg对象的所有ResidualBlockInfo, 计算每个残差项，以及残差对优化变量的雅克比
 
         marginalization_info->Marginalize(); //marg滑窗的第一个位姿
         
-        std::unordered_map<long, double *> addr_shift; //<滑窗第二个位姿参数块地址, 第一个位姿参数块的raw data>
-        for (int i = 1; i < windowSize; ++i) {         //<滑窗第三个位姿参数块地址, 第二个位姿参数块的raw data>
+        // printWindow();
+
+        std::unordered_map<long, double *> addr_shift; //<滑窗第二个位姿参数块(P, Q, VBaBg)地址, 第一个位姿参数块(P, Q, VBaBg)的raw data>
+                                                       //<滑窗第三个位姿参数块(P, Q, VBaBg)地址, 第二个位姿参数块(P, Q, VBaBg)的raw data>
+        std::cout<<"addr_shift\n";                                               
+        for (int i = 1; i < windowSize; ++i) {     
             addr_shift[reinterpret_cast<long>(tmpTrans[i])] = tmpTrans[i-1]; //TODO: 为什么不是 tmpTrans[i] = tmpTrans[i]
             addr_shift[reinterpret_cast<long>(tmpQuat[i])] = tmpQuat[i-1];
             addr_shift[reinterpret_cast<long>(tmpSpeedBias[i])] = tmpSpeedBias[i-1];
+            std::printf("tmpTrans[%d] = 0x%x, tmpQuat[%d] = 0x%x, tmpSpeedBias[%d] = 0x%x\n", 
+                                 i-1, tmpTrans[i-1], i-1, tmpQuat[i-1], i-1, tmpSpeedBias[i-1]);
         }
 
         vector<double *> parameter_blocks = marginalization_info->GetParameterBlocks(addr_shift);
-        //存储的raw指针分别指向本次滑窗中第一个位姿(被marg掉)参数块data, 第二个位姿参数块data
+        //parameter_blocks[]: raw指针分别指向本次滑窗中第一个位姿参数块(P, Q, VBaBg)的raw data, 第二个位姿参数块(P, Q)的raw data
+
 
         if (last_marginalization_info) {
             delete last_marginalization_info;
@@ -1804,17 +1827,17 @@ public:
             Eigen::Vector3d Batmp = Eigen::Vector3d::Zero();
             Eigen::Vector3d Bgtmp = Eigen::Vector3d::Zero();
   
-            std::printf("pose_cloud_frame.size= %d, ii= %d, tmp= %d\n", 
-                                  pose_cloud_frame->points.size(), 
-                                  imu_idx_in_kf.size() - slide_window_width - 1, 
-                                  Ps.size() - slide_window_width); 
-            {
-                const auto n = Ps.size();
-                int i = 0;
-                std::printf("curr Ps[].size = %d\n", n);
-                for(const auto& it : Ps)
-                   std::printf("Ps[%d] = %.4lf, %.4lf, %.4lf\n", i++, it(0), it(1), it(2)); 
-            }       
+            // std::printf("pose_cloud_frame.size= %d, ii= %d, tmp= %d\n", 
+            //                       pose_cloud_frame->points.size(), 
+            //                       imu_idx_in_kf.size() - slide_window_width - 1, 
+            //                       Ps.size() - slide_window_width); 
+            // {
+            //     const auto n = Ps.size();
+            //     int i = 0;
+            //     std::printf("curr Ps[].size = %d\n", n);
+            //     for(const auto& it : Ps)
+            //        std::printf("Ps[%d] = %.4lf, %.4lf, %.4lf\n", i++, it(0), it(1), it(2)); 
+            // }       
             
             // <pose_cloud_frame.size= 4, ii= 0, tmp= 2>
             // <pose_cloud_frame.size= 5, ii= 1, tmp= 3>
@@ -2446,19 +2469,19 @@ public:
         //第9帧开始擦除
         if(surf_lasts_ds.size() > slide_window_width + 5) {
             surf_lasts_ds[surf_lasts_ds.size() - slide_window_width - 6]->clear();
-            std::cout<<"release surf_lasts_ds[]\n";
+            //std::cout<<"\nrelease surf_lasts_ds[]\n";
         }
         
         //第8帧开始擦除
         if(pre_integrations.size() > slide_window_width + 5) {
             pre_integrations[pre_integrations.size() - slide_window_width - 6] = nullptr; //TODO: 直接置为nullptr释放掉了内存吗, 应该调用其析构函数释放资源？
-            std::cout<<"release pre_integrations[]\n";
+            //std::cout<<"\nrelease pre_integrations[]\n";
         }
         
         //第11帧开始擦除
         if(last_marginalization_parameter_blocks.size() > slide_window_width + 5) {
             last_marginalization_parameter_blocks[last_marginalization_parameter_blocks.size() - slide_window_width - 6] = nullptr; //TODO: 同样
-            std::cout<<"release last_margialization_parameter_blocks[]\n";
+            //std::cout<<"\nrelease last_margialization_parameter_blocks[]\n";
         }
     }
 
@@ -2720,7 +2743,8 @@ public:
         }
         ds_filter_global_map.setInputCloud(global_map);
         ds_filter_global_map.filter(*global_map_ds);
-        pcl::io::savePCDFileASCII("/home/jxl/lili_om_rot_global_map.pcd", *global_map_ds);
+
+        pcl::io::savePCDFileASCII(std::getenv("HOME") + std::string("/lili_om_rot_global_map.pcd"), *global_map_ds);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
         global_map->clear();
